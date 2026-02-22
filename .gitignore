@@ -11,3 +11,6 @@ pnpm-debug.log*
 # local ssh key for github push
 .ssh_github
 .ssh_github.pub
+
+# runtime data
+history/
