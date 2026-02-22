@@ -38,8 +38,8 @@ let assistantWaitTimer = null;
 const recentUserLinesBySession = new Map();
 const transcriptCache = new Map();
 const assistantStreamStateBySession = new Map();
-// 保存每个终端会话的原始输出缓冲，切换时恢复
-const sessionTerminalBuffers = new Map();
+// 每个会话独立的 xterm 实例，切换时 show/hide 而非销毁重建
+const sessionTerminals = new Map();
 const PRECHAT_TITLES = [
     '今天想要问点什么？',
     '你今日有什么安排吗？',
@@ -201,10 +201,14 @@ function resetConversationEntryState(shouldRefreshTitle = true) {
     pendingOutputWhileHydrating.clear();
     clearAssistantStreamState();
 
+    // 清理当前活动终端引用（不销毁其他会话的终端，他们可能仍在活跃）
     if (term) {
-        term.dispose();
         term = null;
         fitAddon = null;
+    }
+    // 隐藏所有会话终端容器
+    for (const [, st] of sessionTerminals) {
+        if (st.containerEl) st.containerEl.style.display = 'none';
     }
 
     const prechatInput = document.getElementById('prechatInput');
@@ -1622,14 +1626,7 @@ function handleMessage(msg) {
                 recentUserLinesBySession.set(currentSessionId, []);
             }
             clearAssistantStreamState(currentSessionId);
-            // 首次连接/重连：清空 buffer，等服务端发完整 replay
             terminalRawBuffer = '';
-            // 恢复会话时销毁旧终端实例，防止内容错乱
-            if (term) {
-                term.dispose();
-                term = null;
-                fitAddon = null;
-            }
             isStartingSession = false;
             historyModeSessionId = null;
             activeSessionMeta = {
@@ -1674,6 +1671,7 @@ function handleMessage(msg) {
             if (currentSessionId) {
                 recentUserLinesBySession.delete(currentSessionId);
                 clearAssistantStreamState(currentSessionId);
+                destroySessionTerminal(currentSessionId);
             }
             currentAgent = '';
             currentModel = '';
@@ -1692,6 +1690,7 @@ function handleMessage(msg) {
             if (currentSessionId) {
                 recentUserLinesBySession.delete(currentSessionId);
                 clearAssistantStreamState(currentSessionId);
+                destroySessionTerminal(currentSessionId);
             }
             currentAgent = '';
             currentSessionId = null;
@@ -1710,11 +1709,6 @@ function handleMessage(msg) {
             renderHistoryList();
             break;
         case 'session_switched': {
-            // 先保存旧会话的终端缓冲（切走前啥样）
-            const prevSessionId = currentSessionId;
-            if (prevSessionId && terminalRawBuffer) {
-                sessionTerminalBuffers.set(prevSessionId, terminalRawBuffer);
-            }
             currentAgent = msg.agentId;
             currentModel = msg.modelId;
             currentSessionId = msg.sessionId;
@@ -1723,14 +1717,7 @@ function handleMessage(msg) {
                 recentUserLinesBySession.set(currentSessionId, []);
             }
             clearAssistantStreamState(currentSessionId);
-            // 恢复目标会话的缓冲（切回来啥样），服务端只发增量
-            terminalRawBuffer = sessionTerminalBuffers.get(msg.sessionId) || '';
-            // 销毁旧终端实例，重建并写入恢复的缓冲
-            if (term) {
-                term.dispose();
-                term = null;
-                fitAddon = null;
-            }
+            terminalRawBuffer = '';
             isStartingSession = false;
             historyModeSessionId = null;
             activeSessionMeta = {
@@ -1761,6 +1748,7 @@ function handleMessage(msg) {
         case 'session_stopped':
             recentUserLinesBySession.delete(msg.sessionId);
             clearAssistantStreamState(msg.sessionId);
+            destroySessionTerminal(msg.sessionId);
             if (pendingSwitchSessionId === msg.sessionId) pendingSwitchSessionId = null;
             if (currentSessionId === msg.sessionId) {
                 currentSessionId = null;
@@ -1880,7 +1868,8 @@ function showAgentUI(active) {
             document.body.classList.add('terminal-mode');
             terminalEl.style.display = 'block';
             chatView.style.display = 'none';
-            if (!term) initTerminal();
+            // 切换到当前会话的终端（show/hide，不销毁）
+            switchTerminalToSession(currentSessionId);
         } else {
             document.body.classList.remove('terminal-mode');
             terminalEl.style.display = 'none';
@@ -1894,7 +1883,7 @@ function showAgentUI(active) {
             document.body.classList.add('terminal-mode');
             terminalEl.style.display = 'block';
             chatView.style.display = 'none';
-            if (!term) initTerminal();
+            switchTerminalToSession(currentSessionId);
         } else {
             document.body.classList.remove('terminal-mode');
             terminalEl.style.display = 'none';
@@ -1906,11 +1895,12 @@ function showAgentUI(active) {
                 if (prechatScreen) prechatScreen.style.display = 'flex';
                 if (chatStream) chatStream.style.display = 'none';
             }
-            if (term) {
-                term.dispose();
-                term = null;
-                fitAddon = null;
+            // 隐藏所有终端容器（不销毁）
+            for (const [, st] of sessionTerminals) {
+                if (st.containerEl) st.containerEl.style.display = 'none';
             }
+            term = null;
+            fitAddon = null;
         }
         renderFileTree();
     }
@@ -1993,8 +1983,52 @@ function getFileIcon(filename) {
 }
 
 // ========== xterm.js ==========
-function initTerminal() {
-    term = new Terminal({
+
+/**
+ * 切换到指定会话的终端（show/hide，不销毁重建）
+ * 如果该会话还没有终端实例则创建新的
+ */
+function switchTerminalToSession(sessionId) {
+    // 隐藏所有其他会话的终端容器
+    for (const [sid, st] of sessionTerminals) {
+        if (st.containerEl) {
+            st.containerEl.style.display = sid === sessionId ? 'block' : 'none';
+        }
+    }
+
+    const existing = sessionTerminals.get(sessionId);
+    if (existing) {
+        // 已有实例，直接显示并指向全局引用
+        term = existing.term;
+        fitAddon = existing.fitAddon;
+        existing.containerEl.style.display = 'block';
+        setTimeout(() => {
+            fitAddon.fit();
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+            }
+        }, 50);
+    } else {
+        // 新会话，创建新的终端实例
+        initTerminalForSession(sessionId);
+    }
+}
+
+/**
+ * 为指定会话创建独立的 xterm 实例和容器
+ */
+function initTerminalForSession(sessionId) {
+    const terminalEl = document.getElementById('terminal');
+
+    // 创建此会话的独立容器
+    const container = document.createElement('div');
+    container.className = 'session-terminal-container';
+    container.style.width = '100%';
+    container.style.height = '100%';
+    container.dataset.sessionId = sessionId;
+    terminalEl.appendChild(container);
+
+    const newTerm = new Terminal({
         theme: {
             background: '#0d1117', foreground: '#e6edf3', cursor: '#58a6ff', cursorAccent: '#0d1117',
             selectionBackground: 'rgba(88, 166, 255, 0.3)',
@@ -2008,34 +2042,66 @@ function initTerminal() {
         allowProposedApi: true
     });
 
-    fitAddon = new FitAddon.FitAddon();
+    const newFitAddon = new FitAddon.FitAddon();
     const webLinksAddon = new WebLinksAddon.WebLinksAddon();
-    term.loadAddon(fitAddon);
-    term.loadAddon(webLinksAddon);
-    term.open(document.getElementById('terminal'));
-    if (terminalRawBuffer) {
-        term.write(terminalRawBuffer);
-    }
+    newTerm.loadAddon(newFitAddon);
+    newTerm.loadAddon(webLinksAddon);
+    newTerm.open(container);
+
+    // 设置全局引用
+    term = newTerm;
+    fitAddon = newFitAddon;
+
+    // 保存到 Map
+    sessionTerminals.set(sessionId, { term: newTerm, fitAddon: newFitAddon, containerEl: container });
 
     setTimeout(() => {
-        fitAddon.fit();
+        newFitAddon.fit();
         if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+            ws.send(JSON.stringify({ type: 'resize', cols: newTerm.cols, rows: newTerm.rows }));
         }
     }, 100);
 
-    term.onData((data) => {
+    newTerm.onData((data) => {
         if (shouldIgnoreTerminalInput(data)) return;
         if (currentSessionId && ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'input', data }));
         }
     });
 
-    term.onResize(({ cols, rows }) => {
+    newTerm.onResize(({ cols, rows }) => {
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'resize', cols, rows }));
         }
     });
+}
+
+/**
+ * 销毁指定会话的终端实例（会话结束时调用）
+ */
+function destroySessionTerminal(sessionId) {
+    const st = sessionTerminals.get(sessionId);
+    if (!st) return;
+    try {
+        st.term.dispose();
+    } catch (e) { /* 忽略 */ }
+    if (st.containerEl && st.containerEl.parentNode) {
+        st.containerEl.parentNode.removeChild(st.containerEl);
+    }
+    sessionTerminals.delete(sessionId);
+    if (term === st.term) {
+        term = null;
+        fitAddon = null;
+    }
+}
+
+/**
+ * 兼容旧调用 - 初始化当前会话的终端
+ */
+function initTerminal() {
+    if (currentSessionId) {
+        initTerminalForSession(currentSessionId);
+    }
 }
 
 function clearTerminalViewport() {
