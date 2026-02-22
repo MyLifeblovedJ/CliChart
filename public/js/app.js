@@ -761,9 +761,15 @@ function renderChatMessages(messages) {
         el.className = `chat-message ${m.role}`;
         el.dataset.role = m.role;
         if (m.role === 'assistant') {
-            const cleaned = sanitizeTerminalOutputForChat(m.content);
-            if (!cleaned) return;
-            const noEcho = stripEchoedUserLines(cleaned, seenUserLines);
+            // transcript 消息已在服务端过滤过，这里只做轻量清理
+            // 不用 sanitizeTerminalOutputForChat（那是为实时小 chunk 设计的，
+            // 对完整拼接消息会误杀有效内容）
+            const lightly = stripAnsi(m.content || '')
+                .replace(/[^\x09\x0A\x20-\x7E\u00A0-\uFFFF]/g, '')
+                .replace(/\n{3,}/g, '\n\n')
+                .trim();
+            if (!lightly) return;
+            const noEcho = stripEchoedUserLines(lightly, seenUserLines);
             if (!noEcho) return;
             const divider = document.createElement('div');
             divider.className = 'assistant-divider';
