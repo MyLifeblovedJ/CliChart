@@ -864,6 +864,8 @@ body {
   text-align: center;
   color: #e8f0fa;
   letter-spacing: -0.5px;
+  /* 预留标题高度，防止 JS 加载后布局抖动 */
+  min-height: 1.15em;
   animation: prechat-fade-in 0.45s ease both;
 }
 

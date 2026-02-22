@@ -161,6 +161,12 @@ function refreshPrechatTitle(options = {}) {
     if (init) {
         if (window[PRECHAT_INIT_GUARD_KEY]) return;
         window[PRECHAT_INIT_GUARD_KEY] = true;
+        // 首次加载：随机选择标题文字，但不重置动画（HTML 已预填占位，无需重触发淡入）
+        const titleEl = document.getElementById('prechatTitle');
+        if (!titleEl) return;
+        const idx = Math.floor(Math.random() * PRECHAT_TITLES.length);
+        titleEl.textContent = PRECHAT_TITLES[idx];
+        return;
     }
     const titleEl = document.getElementById('prechatTitle');
     if (!titleEl) return;
@@ -440,14 +446,17 @@ function shouldDropChatLine(line) {
     if (/^[█░▀▄▌▐▖▗▘▙▛▜▟\s]{12,}$/.test(trimmed)) return true;
     if (/^[•◦]\s*(working|preparing|booting)\b/i.test(trimmed)) return true;
     if (!hasCjk && /^[a-z]\s*[•◦]$/i.test(trimmed)) return true;
-    if (!hasCjk && /[•◦]/.test(trimmed) && lettersOnly.length >= 8) return true;
-    if (/^›\s*/.test(trimmed)) return true;
+    // 仅过滤「只包含 •◦ 字符和少量字母」的噪声行，不过滤含 •◦ 的正常内容
+    if (!hasCjk && /^[•◦\s]+$/.test(trimmed)) return true;
+    // 仅过滤孤立的 › 提示符行，不过滤 › 后面有实际内容的行
+    if (/^›\s*$/.test(trimmed)) return true;
     if (/^↳\s*/.test(trimmed)) return true;
     if (/alt\s*\+\s*[↑↓←→].*edit/i.test(trimmed)) return true;
     if (/^(r?oot)@[^#\n]+:?\s*(r?oot)?@?[^#\n]*#/.test(trimmed)) return true;
     if (/^(\d+%|\d+s)\b/.test(trimmed)) return true;
     if (!hasCjk && hasExcessiveRepeats(trimmed)) return true;
-    if (!hasCjk && lettersOnly.length >= 28 && trimmed.split(/\s+/).length <= 3) return true;
+    // 放宽阈值：仅过滤超长单词（无空格分隔的乱码），避免误杀长英文行
+    if (!hasCjk && lettersOnly.length >= 40 && trimmed.split(/\s+/).length <= 1) return true;
     if (!hasCjk && /^[a-z]{2,4}$/.test(trimmed)) return true;
     if (!hasCjk && words.length >= 2 && words.length <= 4) {
         const shortWordCount = words.filter(w => w.length <= 2).length;
@@ -484,7 +493,8 @@ function sanitizeTerminalOutputForChat(text) {
         .replace(/to show where the warning was created\)?/gi, '\n')
         .replace(/;?\s*◇\s*ready[^\n]*/gi, '\n')
         .replace(/logged in with google:[^\n]*/gi, '\n')
-        .replace(/plan:\s*gemini[^\n]*/gi, '\n')
+        // 仅过滤 Gemini CLI 启动时精确的 plan 信息行，不影响正常回复
+        .replace(/^plan:\s*gemini\s*\d/gim, '\n')
         .replace(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*waiting for auth[^\n]*/gi, '\n')
         .replace(/waiting for auth[^\n]*/gi, '\n')
         .replace(/shift\+tab to accept edits/gi, '\n')
@@ -1482,8 +1492,8 @@ function updateSessionStatus() {
 function updateChatModelBadge() {
     const el = document.getElementById('chatModelBadge');
     if (!el) return;
-    const { agentId, modelId, title } = getCenterBadgeMeta();
-    const label = escapeHtml(title ? `${getAgentDisplayName(agentId)} · ${title}` : getSessionDisplayName(agentId, modelId));
+    const { agentId, modelId } = getCenterBadgeMeta();
+    const label = escapeHtml(getAgentDisplayName(agentId));
     // 使用大图标（22px）用于中间 badge 展示
     const icon = getAgentIcon(agentId, 22);
     el.innerHTML = `
