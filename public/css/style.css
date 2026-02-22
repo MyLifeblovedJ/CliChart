@@ -1640,11 +1640,11 @@ body {
   box-shadow: 0 2px 8px rgba(88, 166, 255, 0.3);
 }
 
-/* ========== 底部发送按钮（箭头 → 红色脉冲） ========== */
+/* ========== 底部发送按钮（箭头 → 载入正方形） ========== */
 .btn-chat-send {
   width: 36px;
   height: 36px;
-  border-radius: 50%;
+  border-radius: 8px;
   border: none;
   background: linear-gradient(135deg, var(--accent-blue), #4493f8);
   color: #fff;
@@ -1669,21 +1669,20 @@ body {
 
 .btn-chat-send .send-loading-dot {
   position: absolute;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
   background: #fff;
   opacity: 0;
   transform: scale(0);
   transition: opacity 0.22s ease, transform 0.22s ease;
 }
 
-/* loading 状态：红色脉冲 */
+/* loading 状态：红色呼吸 */
 .btn-chat-send.loading {
   background: #e53935;
-  box-shadow: 0 0 0 0 rgba(229, 57, 53, 0.5);
-  animation: send-btn-pulse 1.6s ease-in-out infinite;
   cursor: default;
+  animation: send-btn-breathe 1.8s ease-in-out infinite;
 }
 
 .btn-chat-send.loading:hover {
@@ -1700,17 +1699,15 @@ body {
   transform: scale(1);
 }
 
-@keyframes send-btn-pulse {
-  0% {
-    box-shadow: 0 0 0 0 rgba(229, 57, 53, 0.5);
+@keyframes send-btn-breathe {
+
+  0%,
+  100% {
+    opacity: 1;
   }
 
   50% {
-    box-shadow: 0 0 0 10px rgba(229, 57, 53, 0);
-  }
-
-  100% {
-    box-shadow: 0 0 0 0 rgba(229, 57, 53, 0);
+    opacity: 0.7;
   }
 }
 

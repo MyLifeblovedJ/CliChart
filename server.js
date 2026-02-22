@@ -326,7 +326,8 @@ wss.on('connection', (ws, req) => {
                     const text = msg.text || '';
                     console.log(`[WebSocket] 用户 ${username} 发送 user_message 到会话 ${currentSessionId}（长度=${text.length}）`);
                     sessionManager.recordUserMessage(currentSessionId, text);
-                    sessionManager.sendInput(currentSessionId, text + '\r\n');
+                    // 发送输入到终端（sendInput 内部会针对不同 Agent 做适配）
+                    sessionManager.sendChatInput(currentSessionId, text);
                     sendActiveSessions();
                 } catch (err) {
                     ws.send(JSON.stringify({ type: 'error', message: err.message }));
@@ -510,7 +511,7 @@ function listModelsViaCli(agent) {
 
         let buffer = '';
         const killAndResolve = (models) => {
-            try { ptyProcess.kill(); } catch {}
+            try { ptyProcess.kill(); } catch { }
             resolve(models);
         };
 

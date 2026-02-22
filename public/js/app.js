@@ -1621,7 +1621,12 @@ function handleMessage(msg) {
             }
             clearAssistantStreamState(currentSessionId);
             terminalRawBuffer = '';
-            clearTerminalViewport();
+            // 恢复会话时销毁旧终端实例，防止内容错乱
+            if (term) {
+                term.dispose();
+                term = null;
+                fitAddon = null;
+            }
             isStartingSession = false;
             historyModeSessionId = null;
             activeSessionMeta = {
@@ -1711,7 +1716,12 @@ function handleMessage(msg) {
             }
             clearAssistantStreamState(currentSessionId);
             terminalRawBuffer = '';
-            clearTerminalViewport();
+            // 切换会话时销毁旧终端实例，防止内容错乱
+            if (term) {
+                term.dispose();
+                term = null;
+                fitAddon = null;
+            }
             isStartingSession = false;
             historyModeSessionId = null;
             activeSessionMeta = {
