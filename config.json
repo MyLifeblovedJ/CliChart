@@ -3,6 +3,7 @@
     "uploadDir": "./uploads",
     "maxFileSize": 52428800,
     "sessionTimeout": 86400000,
+    "inactiveSessionTimeout": 1800000,
     "historyDir": "./history",
     "users": [
         {

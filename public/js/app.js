@@ -30,6 +30,9 @@ let sessionMode = 'chat';
 let agentSelectionConfirmed = false;
 let modeSelectionConfirmed = false;
 let bottomBarHideTimer = null;
+let isAwaitingAssistant = false;
+let assistantWaitStartedAt = 0;
+let assistantWaitTimer = null;
 const PRECHAT_TITLES = [
     '今天想要问点什么？',
     '你今日有什么安排吗？',
@@ -193,7 +196,37 @@ function setView(view) {
 function resetChatView() {
     chatMessages = [];
     lastAssistantEl = null;
+    setAssistantPending(false);
     renderChatMessages(chatMessages);
+}
+
+function updateAssistantPendingText() {
+    const textEl = document.getElementById('chatLoadingText');
+    if (!textEl) return;
+    const elapsedSec = Math.max(0, Math.floor((Date.now() - assistantWaitStartedAt) / 1000));
+    textEl.textContent = `消息已发送，等待回复 ${elapsedSec}s`;
+}
+
+function setAssistantPending(pending) {
+    const loadingEl = document.getElementById('chatLoading');
+    if (!loadingEl) return;
+    if (!pending) {
+        isAwaitingAssistant = false;
+        assistantWaitStartedAt = 0;
+        if (assistantWaitTimer) {
+            clearInterval(assistantWaitTimer);
+            assistantWaitTimer = null;
+        }
+        loadingEl.style.display = 'none';
+        return;
+    }
+    if (isAwaitingAssistant) return;
+    isAwaitingAssistant = true;
+    assistantWaitStartedAt = Date.now();
+    loadingEl.style.display = 'inline-flex';
+    updateAssistantPendingText();
+    if (assistantWaitTimer) clearInterval(assistantWaitTimer);
+    assistantWaitTimer = setInterval(updateAssistantPendingText, 1000);
 }
 
 const ANSI_ESCAPE_RE = /[\u001b\u009b][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[a-zA-Z\d]*)*)?\u0007)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g;
@@ -260,6 +293,7 @@ function shouldDropChatLine(line) {
     const lowered = trimmed.toLowerCase();
     const lettersOnly = lowered.replace(/[^a-z]/g, '');
     const compactLetters = lettersOnly.replace(/([a-z])\1+/g, '$1');
+    const words = trimmed.split(/\s+/).filter(Boolean);
     const hasCjk = /[\u4e00-\u9fff]/.test(trimmed);
     if (!trimmed) return true;
     if (trimmed.length <= 1) return true;
@@ -280,6 +314,14 @@ function shouldDropChatLine(line) {
     if (/^(\d+%|\d+s)\b/.test(trimmed)) return true;
     if (!hasCjk && hasExcessiveRepeats(trimmed)) return true;
     if (!hasCjk && lettersOnly.length >= 28 && trimmed.split(/\s+/).length <= 3) return true;
+    if (!hasCjk && words.length >= 2 && words.length <= 4) {
+        const shortWordCount = words.filter(w => w.length <= 2).length;
+        const looksAscii = /^[a-z0-9: ._-]+$/i.test(trimmed);
+        const mostlyConsonants = lettersOnly.length >= 4 && !/[aeiou]/.test(lettersOnly);
+        if (looksAscii && shortWordCount >= words.length - 1 && (mostlyConsonants || /[A-Z]|:|\d|[•◦]/.test(trimmed))) {
+            return true;
+        }
+    }
     if (/^[\[\]0-9;?=><\-+]*$/.test(trimmed)) return true;
     return false;
 }
@@ -423,7 +465,8 @@ function enhanceMessageHtml(messageEl) {
 
 function appendAssistantChunk(chunk) {
     const cleaned = sanitizeTerminalOutputForChat(chunk);
-    if (!cleaned) return;
+    if (!cleaned) return false;
+    setAssistantPending(false);
     const container = document.getElementById('chatMessages');
     if (!lastAssistantEl || lastAssistantEl.dataset.role !== 'assistant') {
         const el = document.createElement('div');
@@ -443,6 +486,7 @@ function appendAssistantChunk(chunk) {
         enhanceMessageHtml(lastAssistantEl);
     }
     container.scrollTop = container.scrollHeight;
+    return true;
 }
 
 function addUserMessage(text) {
@@ -460,6 +504,7 @@ function renderChatMessages(messages) {
     const container = document.getElementById('chatMessages');
     container.innerHTML = '';
     lastAssistantEl = null;
+    setAssistantPending(false);
     messages.forEach(m => {
         const el = document.createElement('div');
         el.className = `chat-message ${m.role}`;
@@ -819,9 +864,11 @@ function renderHistoryList() {
         el.addEventListener('click', () => {
             const sessionId = el.dataset.session;
             const active = el.dataset.active === '1';
+            const viewable = el.dataset.viewable !== '0';
             closeHistoryMenus();
             if (active) switchSession(sessionId);
-            else openHistory(sessionId);
+            else if (viewable) openHistory(sessionId);
+            else showToast('终端模式不保存可回看的消息历史', 'info');
         });
     });
 
@@ -905,6 +952,11 @@ function renderHistoryItem(item) {
     const modeIcon = getModeIcon(item.mode);
     const agentName = escapeHtml(getAgentDisplayName(item.agentId));
     const modeName = item.mode === 'terminal' ? '终端会话' : 'UI 会话';
+    const canViewTranscript = item.mode !== 'terminal' && item.hasTranscript !== false;
+    const terminalTag = item.mode === 'terminal'
+        ? '<span class="history-mode-tag" title="终端模式不保存消息历史">终端无历史</span>'
+        : '';
+    const activeDot = item.active ? '<span class="history-running-dot" title="CLI 运行中"></span>' : '';
 
     const menuActions = item.active
         ? `
@@ -913,19 +965,21 @@ function renderHistoryItem(item) {
       <button data-action="stop" data-session="${item.sessionId}">停止</button>
     `
         : `
-      <button data-action="view" data-session="${item.sessionId}">查看</button>
+      <button data-action="view" data-session="${item.sessionId}" ${canViewTranscript ? '' : 'disabled title="终端模式无可读历史"'}>查看</button>
       <button data-action="rename" data-session="${item.sessionId}">重命名</button>
       <button data-action="delete" data-session="${item.sessionId}">删除</button>
     `;
 
     return `
     <div class="history-item ${isCurrent ? 'active' : ''}" data-session="${item.sessionId}">
-      <div class="history-item-main" data-session="${item.sessionId}" data-active="${item.active ? '1' : '0'}">
+      <div class="history-item-main" data-session="${item.sessionId}" data-active="${item.active ? '1' : '0'}" data-viewable="${canViewTranscript ? '1' : '0'}">
         <div class="history-title">${title}</div>
         <div class="history-meta-row">
           <span class="history-meta-icons">
+            ${activeDot}
             <span class="history-meta-icon" title="${agentName}">${agentIcon}</span>
             <span class="history-meta-icon" title="${modeName}">${modeIcon}</span>
+            ${terminalTag}
           </span>
           <span class="history-meta">${time}</span>
         </div>
@@ -965,6 +1019,10 @@ async function openHistory(sessionId) {
             return;
         }
         const data = await res.json();
+        if ((data?.mode || '') === 'terminal') {
+            showToast('终端模式不保存可回看的消息历史', 'info');
+            return;
+        }
         historyModeSessionId = sessionId;
         isStartingSession = false;
         sessionMode = 'chat';
@@ -972,6 +1030,7 @@ async function openHistory(sessionId) {
         currentAgent = data.agentId || '';
         currentModel = data.modelId || 'default';
         renderChatMessages(data.messages || []);
+        setAssistantPending(false);
         setInputEnabled(false);
         currentSessionId = null;
         activeSessionMeta = null;
@@ -1130,6 +1189,7 @@ function connectWebSocket() {
     ws.onclose = () => {
         isConnected = false;
         isStartingSession = false;
+        setAssistantPending(false);
         setConnectionStatus(false);
         updateSessionStatus();
         updateSessionActionButtons();
@@ -1181,6 +1241,7 @@ function handleMessage(msg) {
                 const text = pendingUserMessage;
                 pendingUserMessage = null;
                 addUserMessage(text);
+                if (sessionMode === 'chat') setAssistantPending(true);
                 if (ws && ws.readyState === WebSocket.OPEN) {
                     ws.send(JSON.stringify({ type: 'user_message', text }));
                 }
@@ -1208,6 +1269,7 @@ function handleMessage(msg) {
                 renderFileTree();
             }
             setInputEnabled(true);
+            setAssistantPending(false);
             loadActiveSessions().then(renderHistoryList);
             break;
         case 'no_session':
@@ -1218,6 +1280,7 @@ function handleMessage(msg) {
             isStartingSession = false;
             showAgentUI(false);
             setInputEnabled(!historyModeSessionId);
+            setAssistantPending(false);
             break;
         case 'stopped':
             currentAgent = '';
@@ -1228,6 +1291,7 @@ function handleMessage(msg) {
             isStartingSession = false;
             showAgentUI(false);
             setInputEnabled(!historyModeSessionId);
+            setAssistantPending(false);
             loadActiveSessions().then(loadHistory);
             break;
         case 'exit':
@@ -1238,6 +1302,7 @@ function handleMessage(msg) {
             showAgentUI(false);
             showToast(msg.message || 'Agent 进程已退出', 'error');
             setInputEnabled(!historyModeSessionId);
+            setAssistantPending(false);
             loadActiveSessions().then(loadHistory);
             break;
         case 'sessions':
@@ -1261,6 +1326,7 @@ function handleMessage(msg) {
             showAgentUI(true);
             setInputEnabled(true);
             resetChatView();
+            setAssistantPending(false);
             setSelectedAgent(msg.agentId, true);
             setPendingMode(sessionMode, true);
             if (msg.files) {
@@ -1275,6 +1341,7 @@ function handleMessage(msg) {
                 isStartingSession = false;
                 showAgentUI(false);
                 setInputEnabled(!historyModeSessionId);
+                setAssistantPending(false);
             }
             loadActiveSessions().then(loadHistory);
             break;
@@ -1282,6 +1349,7 @@ function handleMessage(msg) {
             isStartingSession = false;
             showAgentUI(false);
             setInputEnabled(!historyModeSessionId);
+            setAssistantPending(false);
             break;
         case 'file_added':
             sessionFiles = msg.files;
@@ -1294,6 +1362,7 @@ function handleMessage(msg) {
         case 'error':
             isStartingSession = false;
             showToast(msg.message, 'error');
+            setAssistantPending(false);
             break;
     }
     updateSessionStatus();
@@ -1311,6 +1380,7 @@ function startPrechatConversation() {
     pendingUserMessage = text;
     sessionMode = pendingMode;
     if (prechatInput) prechatInput.value = '';
+    if (sessionMode === 'chat') setAssistantPending(true);
     startSelectedSession();
 }
 
@@ -1550,6 +1620,7 @@ function sendMessage() {
     }
 
     addUserMessage(text);
+    if (sessionMode === 'chat') setAssistantPending(true);
 
     if (!currentSessionId) {
         const agentId = getSelectedAgentId();

@@ -156,7 +156,9 @@ app.get('/api/sessions/active', auth.middleware(), (req, res) => {
         agentId: s.agentId,
         modelId: s.modelId,
         mode: s.mode || 'chat',
+        hasTranscript: s.mode !== 'terminal',
         createdAt: s.createdAt,
+        lastActivityAt: s.lastActivityAt || s.createdAt,
         title: s.title
     }));
     res.json(sessions);
@@ -238,7 +240,9 @@ wss.on('connection', (ws, req) => {
             agentId: s.agentId,
             modelId: s.modelId,
             mode: s.mode || 'chat',
+            hasTranscript: s.mode !== 'terminal',
             createdAt: s.createdAt,
+            lastActivityAt: s.lastActivityAt || s.createdAt,
             title: s.title
         }));
         if (ws.readyState === WebSocket.OPEN) {
