@@ -27,6 +27,8 @@ let terminalRawBuffer = '';
 let isStartingSession = false;
 let pendingMode = 'chat';
 let sessionMode = 'chat';
+let pendingSwitchSessionId = null;
+let focusedSessionId = null;
 let agentSelectionConfirmed = false;
 let modeSelectionConfirmed = false;
 let bottomBarHideTimer = null;
@@ -34,6 +36,8 @@ let isAwaitingAssistant = false;
 let assistantWaitStartedAt = 0;
 let assistantWaitTimer = null;
 const recentUserLinesBySession = new Map();
+const transcriptCache = new Map();
+const assistantStreamStateBySession = new Map();
 const PRECHAT_TITLES = [
     '今天想要问点什么？',
     '你今日有什么安排吗？',
@@ -168,7 +172,9 @@ function resetConversationEntryState() {
     pendingMode = 'chat';
     agentSelectionConfirmed = true;
     modeSelectionConfirmed = true;
+    focusedSessionId = null;
     pendingUserMessage = null;
+    clearAssistantStreamState();
 
     if (term) {
         term.dispose();
@@ -198,6 +204,7 @@ function resetChatView() {
     chatMessages = [];
     lastAssistantEl = null;
     setAssistantPending(false);
+    clearAssistantStreamState(currentSessionId);
     renderChatMessages(chatMessages);
 }
 
@@ -260,14 +267,18 @@ function getRememberedUserLineSet(sessionId) {
 function stripEchoedUserLines(text, rememberedSet) {
     if (!text) return '';
     if (!rememberedSet || rememberedSet.size === 0) return text;
-    const filtered = text
-        .split('\n')
-        .filter(line => {
-            const normalized = normalizeLineForEcho(line);
-            if (!normalized) return false;
-            return !rememberedSet.has(normalized);
-        });
-    return filtered.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+    const lines = text.split('\n');
+    let start = 0;
+    while (start < lines.length) {
+        const normalized = normalizeLineForEcho(lines[start]);
+        if (!normalized) {
+            start += 1;
+            continue;
+        }
+        if (!rememberedSet.has(normalized)) break;
+        start += 1;
+    }
+    return lines.slice(start).join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 const ANSI_ESCAPE_RE = /[\u001b\u009b][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[a-zA-Z\d]*)*)?\u0007)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g;
@@ -513,6 +524,9 @@ function appendAssistantChunk(chunk, sessionId = currentSessionId) {
     setAssistantPending(false);
     const container = document.getElementById('chatMessages');
     if (!lastAssistantEl || lastAssistantEl.dataset.role !== 'assistant') {
+        const divider = document.createElement('div');
+        divider.className = 'assistant-divider';
+        container.appendChild(divider);
         const el = document.createElement('div');
         el.className = 'chat-message assistant';
         el.dataset.role = 'assistant';
@@ -533,6 +547,69 @@ function appendAssistantChunk(chunk, sessionId = currentSessionId) {
     return true;
 }
 
+function getAssistantStreamState(sessionId) {
+    const sid = sessionId || currentSessionId || '__global__';
+    if (!assistantStreamStateBySession.has(sid)) {
+        assistantStreamStateBySession.set(sid, { buffer: '', timer: null });
+    }
+    return { sid, state: assistantStreamStateBySession.get(sid) };
+}
+
+function clearAssistantStreamState(sessionId = null) {
+    if (!sessionId) {
+        assistantStreamStateBySession.forEach(({ timer }) => {
+            if (timer) clearTimeout(timer);
+        });
+        assistantStreamStateBySession.clear();
+        return;
+    }
+    const state = assistantStreamStateBySession.get(sessionId);
+    if (state?.timer) clearTimeout(state.timer);
+    assistantStreamStateBySession.delete(sessionId);
+}
+
+function shouldFlushPartialAssistantText(raw) {
+    const plain = stripAnsi(String(raw || '')).replace(/\s+/g, ' ').trim();
+    return plain.length > 0;
+}
+
+function flushAssistantStreamBuffer(sessionId) {
+    const sid = sessionId || currentSessionId || '__global__';
+    const current = assistantStreamStateBySession.get(sid);
+    if (!current) return false;
+    current.timer = null;
+    const raw = current.buffer;
+    current.buffer = '';
+    if (!currentSessionId || sid !== currentSessionId) return false;
+    if (!shouldFlushPartialAssistantText(raw)) return false;
+    return appendAssistantChunk(raw, sid);
+}
+
+function appendAssistantChunkStream(chunk, sessionId = currentSessionId) {
+    if (!chunk) return false;
+    const { sid, state } = getAssistantStreamState(sessionId);
+    state.buffer += String(chunk);
+    if (state.buffer.length > 120000) {
+        state.buffer = state.buffer.slice(-80000);
+    }
+
+    const normalized = state.buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const parts = normalized.split('\n');
+    state.buffer = parts.pop() || '';
+
+    let rendered = false;
+    for (const part of parts) {
+        rendered = appendAssistantChunk(part, sid) || rendered;
+    }
+
+    if (state.timer) clearTimeout(state.timer);
+    state.timer = setTimeout(() => {
+        flushAssistantStreamBuffer(sid);
+    }, 220);
+
+    return rendered;
+}
+
 function addUserMessage(text) {
     const container = document.getElementById('chatMessages');
     const el = document.createElement('div');
@@ -550,6 +627,7 @@ function renderChatMessages(messages) {
     container.innerHTML = '';
     lastAssistantEl = null;
     setAssistantPending(false);
+    clearAssistantStreamState(currentSessionId);
     const seenUserLines = new Set();
     messages.forEach(m => {
         const el = document.createElement('div');
@@ -560,6 +638,9 @@ function renderChatMessages(messages) {
             if (!cleaned) return;
             const noEcho = stripEchoedUserLines(cleaned, seenUserLines);
             if (!noEcho) return;
+            const divider = document.createElement('div');
+            divider.className = 'assistant-divider';
+            container.appendChild(divider);
             el.dataset.raw = noEcho;
             el.innerHTML = renderMarkdown(noEcho);
             enhanceMessageHtml(el);
@@ -575,7 +656,7 @@ function renderChatMessages(messages) {
 // ========== 事件绑定 ==========
 function setupEventListeners() {
     const logoutBtn = document.getElementById('logoutBtn');
-    const uploadBtn = document.getElementById('uploadBtn');
+    const uploadButtons = Array.from(document.querySelectorAll('[data-upload-btn]'));
     const filePanelToggle = document.getElementById('filePanelToggle');
     const fileInput = document.getElementById('fileInput');
     const messageInput = document.getElementById('messageInput');
@@ -643,8 +724,10 @@ function setupEventListeners() {
         window.location.href = '/';
     });
 
-    uploadBtn.addEventListener('click', () => fileInput.click());
-    fileInput.addEventListener('change', handleFileUpload);
+    uploadButtons.forEach(btn => {
+        btn.addEventListener('click', () => fileInput?.click());
+    });
+    fileInput?.addEventListener('change', handleFileUpload);
     if (filePanelToggle) {
         filePanelToggle.addEventListener('click', () => {
             const collapsed = document.body.classList.contains('right-panel-collapsed');
@@ -853,6 +936,11 @@ async function loadHistory() {
     }
 }
 
+function getHistorySortTime(item) {
+    const ts = Number(item?.lastActivityAt || item?.endedAt || item?.createdAt || 0);
+    return Number.isFinite(ts) ? ts : 0;
+}
+
 function renderHistoryList() {
     const list = document.getElementById('historyList');
     const map = new Map();
@@ -872,10 +960,10 @@ function renderHistoryList() {
             return !query || title.includes(query);
         })
         .sort((a, b) => {
-            const ta = Number(a.createdAt || 0);
-            const tb = Number(b.createdAt || 0);
+            const ta = getHistorySortTime(a);
+            const tb = getHistorySortTime(b);
             if (tb !== ta) return tb - ta;
-            return Number(b.active) - Number(a.active);
+            return Number(b.createdAt || 0) - Number(a.createdAt || 0);
         });
 
     if (items.length === 0) {
@@ -888,7 +976,7 @@ function renderHistoryList() {
         yesterday: [],
         earlier: []
     };
-    items.forEach(item => groups[getHistoryGroup(item.createdAt)].push(item));
+    items.forEach(item => groups[getHistoryGroup(getHistorySortTime(item))].push(item));
 
     const groupOrder = [
         { key: 'today', label: '今天' },
@@ -995,17 +1083,23 @@ function formatHistoryTime(ts) {
 
 function renderHistoryItem(item) {
     const title = escapeHtml(getHistoryTitle(item));
-    const time = escapeHtml(formatHistoryTime(item.createdAt));
-    const isCurrent = currentSessionId === item.sessionId || historyModeSessionId === item.sessionId;
+    const time = escapeHtml(formatHistoryTime(getHistorySortTime(item)));
+    const isCurrent = currentSessionId === item.sessionId
+        || historyModeSessionId === item.sessionId
+        || pendingSwitchSessionId === item.sessionId
+        || focusedSessionId === item.sessionId;
     const agentIcon = getAgentIcon(item.agentId);
     const modeIcon = getModeIcon(item.mode);
     const agentName = escapeHtml(getAgentDisplayName(item.agentId));
     const modeName = item.mode === 'terminal' ? '终端会话' : 'UI 会话';
     const canViewTranscript = item.mode !== 'terminal' && item.hasTranscript !== false;
-    const terminalTag = item.mode === 'terminal'
+    const terminalTag = item.mode === 'terminal' && !item.active
         ? '<span class="history-mode-tag" title="终端模式不保存消息历史">终端无历史</span>'
         : '';
-    const activeDot = item.active ? '<span class="history-running-dot" title="CLI 运行中"></span>' : '';
+    const activeTag = item.active ? '<span class="history-running-tag" title="CLI 运行中">进行中</span>' : '';
+    const interruptedTag = item.endedReason === 'server_restart'
+        ? '<span class="history-mode-tag history-interrupted-tag" title="服务重启前会话被中断">重启中断</span>'
+        : '';
 
     const menuActions = item.active
         ? `
@@ -1025,10 +1119,11 @@ function renderHistoryItem(item) {
         <div class="history-title">${title}</div>
         <div class="history-meta-row">
           <span class="history-meta-icons">
-            ${activeDot}
             <span class="history-meta-icon" title="${agentName}">${agentIcon}</span>
             <span class="history-meta-icon" title="${modeName}">${modeIcon}</span>
             ${terminalTag}
+            ${activeTag}
+            ${interruptedTag}
           </span>
           <span class="history-meta">${time}</span>
         </div>
@@ -1060,19 +1155,34 @@ function getModeIcon(mode) {
     return mode === 'terminal' ? '🖥️' : '💬';
 }
 
+async function fetchTranscript(sessionId, useCache = true) {
+    if (useCache && transcriptCache.has(sessionId)) {
+        return transcriptCache.get(sessionId);
+    }
+    const res = await fetch(`/api/history/${sessionId}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (useCache && data) {
+        transcriptCache.set(sessionId, data);
+    }
+    return data;
+}
+
 async function openHistory(sessionId) {
     try {
-        const res = await fetch(`/api/history/${sessionId}`);
-        if (!res.ok) {
+        focusedSessionId = sessionId;
+        renderHistoryList();
+        const data = await fetchTranscript(sessionId, true);
+        if (!data) {
             showToast('历史记录加载失败', 'error');
             return;
         }
-        const data = await res.json();
         if ((data?.mode || '') === 'terminal') {
             showToast('终端模式不保存可回看的消息历史', 'info');
             return;
         }
         historyModeSessionId = sessionId;
+        focusedSessionId = sessionId;
         isStartingSession = false;
         sessionMode = 'chat';
         currentView = 'chat';
@@ -1092,9 +1202,8 @@ async function openHistory(sessionId) {
 
 async function loadTranscriptIntoChat(sessionId) {
     try {
-        const res = await fetch(`/api/history/${sessionId}`);
-        if (!res.ok) return;
-        const data = await res.json();
+        const data = await fetchTranscript(sessionId, false);
+        if (!data) return;
         historyModeSessionId = null;
         renderChatMessages(data.messages || []);
     } catch {
@@ -1114,6 +1223,10 @@ async function renameSession(sessionId) {
         showToast('重命名失败', 'error');
         return;
     }
+    if (transcriptCache.has(sessionId)) {
+        const cached = transcriptCache.get(sessionId);
+        if (cached) cached.title = title;
+    }
     await loadActiveSessions();
     await loadHistory();
     showToast('已重命名', 'success');
@@ -1126,16 +1239,18 @@ async function deleteSession(sessionId) {
         showToast('删除失败', 'error');
         return;
     }
+    transcriptCache.delete(sessionId);
     await loadHistory();
     showToast('已删除', 'success');
 }
 
 function switchSession(sessionId) {
+    if (!sessionId) return;
+    if (sessionId === currentSessionId || sessionId === pendingSwitchSessionId) return;
     if (ws && ws.readyState === WebSocket.OPEN) {
-        terminalRawBuffer = '';
-        if (term) {
-            term.reset();
-        }
+        pendingSwitchSessionId = sessionId;
+        focusedSessionId = sessionId;
+        renderHistoryList();
         ws.send(JSON.stringify({ type: 'switch_session', sessionId }));
     }
 }
@@ -1223,9 +1338,7 @@ function connectWebSocket() {
     ws.onopen = () => {
         isConnected = true;
         terminalRawBuffer = '';
-        if (term) {
-            term.reset();
-        }
+        clearTerminalViewport();
         setConnectionStatus(true);
         ws.send(JSON.stringify({ type: 'resume' }));
     };
@@ -1255,27 +1368,26 @@ function connectWebSocket() {
 function handleMessage(msg) {
     switch (msg.type) {
         case 'output':
-            if (msg.sessionId && currentSessionId && msg.sessionId !== currentSessionId) {
-                break;
-            }
+            if (msg.sessionId && currentSessionId && msg.sessionId !== currentSessionId) break;
             terminalRawBuffer += msg.data || '';
             if (terminalRawBuffer.length > 200000) {
                 terminalRawBuffer = terminalRawBuffer.slice(-160000);
             }
             if (term) term.write(msg.data);
-            const hasUserBubble = Boolean(document.querySelector('#chatMessages .chat-message.user'));
-            const shouldRenderToChat = sessionMode === 'chat' && hasUserBubble && (!historyModeSessionId || historyModeSessionId === currentSessionId);
+            const shouldRenderToChat = sessionMode === 'chat' && (!historyModeSessionId || historyModeSessionId === currentSessionId);
             if (shouldRenderToChat) {
-                appendAssistantChunk(msg.data, msg.sessionId || currentSessionId);
+                appendAssistantChunkStream(msg.data, msg.sessionId || currentSessionId);
             }
             break;
         case 'started':
             currentAgent = msg.agentId;
             currentModel = msg.modelId;
             currentSessionId = msg.sessionId;
+            focusedSessionId = msg.sessionId;
             if (!recentUserLinesBySession.has(currentSessionId)) {
                 recentUserLinesBySession.set(currentSessionId, []);
             }
+            clearAssistantStreamState(currentSessionId);
             isStartingSession = false;
             historyModeSessionId = null;
             activeSessionMeta = {
@@ -1284,7 +1396,8 @@ function handleMessage(msg) {
                 modelId: msg.modelId,
                 createdAt: Date.now()
             };
-            sessionMode = msg.mode === 'terminal' ? 'terminal' : sessionMode;
+            pendingSwitchSessionId = null;
+            sessionMode = msg.mode === 'terminal' ? 'terminal' : 'chat';
             currentView = sessionMode;
             setSelectedAgent(msg.agentId, true);
             setPendingMode(sessionMode, true);
@@ -1306,9 +1419,13 @@ function handleMessage(msg) {
             currentAgent = msg.agentId;
             currentModel = msg.modelId;
             currentSessionId = msg.sessionId;
+            focusedSessionId = msg.sessionId;
             if (!recentUserLinesBySession.has(currentSessionId)) {
                 recentUserLinesBySession.set(currentSessionId, []);
             }
+            clearAssistantStreamState(currentSessionId);
+            terminalRawBuffer = '';
+            clearTerminalViewport();
             isStartingSession = false;
             historyModeSessionId = null;
             activeSessionMeta = {
@@ -1317,6 +1434,7 @@ function handleMessage(msg) {
                 modelId: msg.modelId,
                 createdAt: Date.now()
             };
+            pendingSwitchSessionId = null;
             sessionMode = msg.mode === 'terminal' ? 'terminal' : 'chat';
             currentView = sessionMode;
             showAgentUI(true);
@@ -1334,8 +1452,11 @@ function handleMessage(msg) {
             currentAgent = '';
             currentModel = '';
             currentSessionId = null;
+            focusedSessionId = historyModeSessionId || null;
             activeSessionMeta = null;
             isStartingSession = false;
+            pendingSwitchSessionId = null;
+            clearAssistantStreamState();
             showAgentUI(false);
             setInputEnabled(!historyModeSessionId);
             setAssistantPending(false);
@@ -1343,13 +1464,16 @@ function handleMessage(msg) {
         case 'stopped':
             if (currentSessionId) {
                 recentUserLinesBySession.delete(currentSessionId);
+                clearAssistantStreamState(currentSessionId);
             }
             currentAgent = '';
             currentModel = '';
             currentSessionId = null;
+            focusedSessionId = historyModeSessionId || null;
             activeSessionMeta = null;
             sessionFiles = [];
             isStartingSession = false;
+            pendingSwitchSessionId = null;
             showAgentUI(false);
             setInputEnabled(!historyModeSessionId);
             setAssistantPending(false);
@@ -1358,11 +1482,14 @@ function handleMessage(msg) {
         case 'exit':
             if (currentSessionId) {
                 recentUserLinesBySession.delete(currentSessionId);
+                clearAssistantStreamState(currentSessionId);
             }
             currentAgent = '';
             currentSessionId = null;
+            focusedSessionId = historyModeSessionId || null;
             activeSessionMeta = null;
             isStartingSession = false;
+            pendingSwitchSessionId = null;
             showAgentUI(false);
             showToast(msg.message || 'Agent 进程已退出', 'error');
             setInputEnabled(!historyModeSessionId);
@@ -1377,9 +1504,13 @@ function handleMessage(msg) {
             currentAgent = msg.agentId;
             currentModel = msg.modelId;
             currentSessionId = msg.sessionId;
+            focusedSessionId = msg.sessionId;
             if (!recentUserLinesBySession.has(currentSessionId)) {
                 recentUserLinesBySession.set(currentSessionId, []);
             }
+            clearAssistantStreamState(currentSessionId);
+            terminalRawBuffer = '';
+            clearTerminalViewport();
             isStartingSession = false;
             historyModeSessionId = null;
             activeSessionMeta = {
@@ -1388,6 +1519,7 @@ function handleMessage(msg) {
                 modelId: msg.modelId,
                 createdAt: Date.now()
             };
+            pendingSwitchSessionId = null;
             sessionMode = msg.mode === 'terminal' ? 'terminal' : 'chat';
             currentView = sessionMode;
             showAgentUI(true);
@@ -1400,12 +1532,18 @@ function handleMessage(msg) {
                 sessionFiles = msg.files;
                 renderFileTree();
             }
-            loadTranscriptIntoChat(msg.sessionId);
+            if (sessionMode === 'chat') {
+                loadTranscriptIntoChat(msg.sessionId);
+            }
+            loadActiveSessions().then(renderHistoryList);
             break;
         case 'session_stopped':
             recentUserLinesBySession.delete(msg.sessionId);
+            clearAssistantStreamState(msg.sessionId);
+            if (pendingSwitchSessionId === msg.sessionId) pendingSwitchSessionId = null;
             if (currentSessionId === msg.sessionId) {
                 currentSessionId = null;
+                focusedSessionId = historyModeSessionId || null;
                 isStartingSession = false;
                 showAgentUI(false);
                 setInputEnabled(!historyModeSessionId);
@@ -1415,6 +1553,9 @@ function handleMessage(msg) {
             break;
         case 'detached':
             isStartingSession = false;
+            pendingSwitchSessionId = null;
+            focusedSessionId = historyModeSessionId || currentSessionId || null;
+            clearAssistantStreamState(currentSessionId);
             showAgentUI(false);
             setInputEnabled(!historyModeSessionId);
             setAssistantPending(false);
@@ -1429,6 +1570,7 @@ function handleMessage(msg) {
             break;
         case 'error':
             isStartingSession = false;
+            pendingSwitchSessionId = null;
             showToast(msg.message, 'error');
             setAssistantPending(false);
             break;
@@ -1465,9 +1607,7 @@ function startSelectedSession() {
     }
     isStartingSession = true;
     terminalRawBuffer = '';
-    if (term) {
-        term.reset();
-    }
+    clearTerminalViewport();
     currentView = sessionMode;
     setView(currentView);
     updateSessionStatus();
@@ -1511,7 +1651,7 @@ function showAgentUI(active) {
     const chatStream = document.getElementById('chatStream');
 
     if (active) {
-        setBottomBarVisible(true);
+        setBottomBarVisible(sessionMode !== 'terminal');
         if (sessionMode === 'terminal') {
             document.body.classList.add('terminal-mode');
             terminalEl.style.display = 'block';
@@ -1661,6 +1801,7 @@ function initTerminal() {
     }, 100);
 
     term.onData((data) => {
+        if (shouldIgnoreTerminalInput(data)) return;
         if (currentSessionId && ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'input', data }));
         }
@@ -1671,6 +1812,20 @@ function initTerminal() {
             ws.send(JSON.stringify({ type: 'resize', cols, rows }));
         }
     });
+}
+
+function clearTerminalViewport() {
+    if (!term) return;
+    term.clear();
+    term.write('\x1b[2J\x1b[H');
+}
+
+function shouldIgnoreTerminalInput(data) {
+    const raw = String(data || '');
+    if (!raw) return true;
+    if (/^(?:\x1b\[(?:\?|>)[0-9;]*c)+$/.test(raw)) return true;
+    if (/^(?:[0-9]+(?:;[0-9]+)*c)+$/.test(raw) && raw.length <= 48) return true;
+    return false;
 }
 
 // ========== 消息发送 ==========
@@ -1699,9 +1854,7 @@ function sendMessage() {
         if (!isStartingSession) {
             isStartingSession = true;
             terminalRawBuffer = '';
-            if (term) {
-                term.reset();
-            }
+            clearTerminalViewport();
             updateSessionStatus();
             updateSessionActionButtons();
             startAgent(agentId, modelId);
@@ -1777,17 +1930,19 @@ function handlePasteUpload(e) {
 }
 
 function updateUploadButtonBadge() {
-    const btn = document.getElementById('uploadBtn');
-    if (!btn) return;
-    if (sessionFiles.length > 0) {
-        btn.classList.add('has-files');
-        btn.dataset.count = String(sessionFiles.length > 99 ? '99+' : sessionFiles.length);
-        btn.title = `上传文件/图片（当前 ${sessionFiles.length} 个）`;
-    } else {
-        btn.classList.remove('has-files');
-        btn.removeAttribute('data-count');
-        btn.title = '上传文件/图片';
-    }
+    const buttons = Array.from(document.querySelectorAll('[data-upload-btn]'));
+    if (buttons.length === 0) return;
+    buttons.forEach(btn => {
+        if (sessionFiles.length > 0) {
+            btn.classList.add('has-files');
+            btn.dataset.count = String(sessionFiles.length > 99 ? '99+' : sessionFiles.length);
+            btn.title = `上传文件/图片（当前 ${sessionFiles.length} 个）`;
+        } else {
+            btn.classList.remove('has-files');
+            btn.removeAttribute('data-count');
+            btn.title = '上传文件/图片';
+        }
+    });
 }
 
 // ========== 拖拽上传 ==========

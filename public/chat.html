@@ -111,8 +111,12 @@
 
         <!-- 右侧文件面板 -->
         <aside class="file-panel right-panel" id="filePanel">
-            <div class="panel-header">
+            <div class="panel-header file-panel-header">
                 <h3>📁 会话文件</h3>
+                <div class="file-panel-actions">
+                    <input type="file" id="fileInput" multiple style="display:none;">
+                    <button class="btn-upload btn-upload-side" id="uploadBtnSide" data-upload-btn title="上传文件/图片">📎</button>
+                </div>
             </div>
             <div class="file-tree" id="fileTree">
                 <div class="file-tree-empty">暂无文件，可拖拽文件到此处</div>
@@ -124,8 +128,7 @@
     <!-- 底部工具栏 -->
     <div class="bottom-bar" id="bottomBar" style="display:none;">
         <div class="input-area" id="inputArea">
-            <input type="file" id="fileInput" multiple style="display:none;">
-            <button class="btn-upload btn-upload-inline" id="uploadBtn" title="上传文件/图片">📎</button>
+            <button class="btn-upload btn-upload-inline" id="uploadBtnInline" data-upload-btn title="上传文件/图片">📎</button>
             <div class="input-wrapper">
                 <textarea id="messageInput" placeholder="输入消息...（Enter 发送，Shift+Enter 换行，@ 引用文件）" rows="1"></textarea>
                 <!-- @ 引用弹窗 -->

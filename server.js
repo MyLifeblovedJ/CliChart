@@ -324,6 +324,7 @@ wss.on('connection', (ws, req) => {
                 }
                 try {
                     const text = msg.text || '';
+                    console.log(`[WebSocket] 用户 ${username} 发送 user_message 到会话 ${currentSessionId}（长度=${text.length}）`);
                     sessionManager.recordUserMessage(currentSessionId, text);
                     sessionManager.sendInput(currentSessionId, text + '\r\n');
                     sendActiveSessions();
@@ -385,15 +386,6 @@ wss.on('connection', (ws, req) => {
                 if (existingSessionId) {
                     const session = sessionManager.getSession(existingSessionId);
                     attachToSession(existingSessionId);
-
-                    if (session && session.outputBuffer) {
-                        ws.send(JSON.stringify({
-                            type: 'output',
-                            sessionId: existingSessionId,
-                            data: session.outputBuffer
-                        }));
-                    }
-
                     ws.send(JSON.stringify({
                         type: 'resumed',
                         sessionId: existingSessionId,
@@ -402,6 +394,16 @@ wss.on('connection', (ws, req) => {
                         mode: session.mode || 'chat',
                         files: session.files
                     }));
+                    const replay = session?.mode === 'terminal'
+                        ? (session.terminalReplayBuffer || session.outputBuffer || '')
+                        : (session?.outputBuffer || '');
+                    if (replay) {
+                        ws.send(JSON.stringify({
+                            type: 'output',
+                            sessionId: existingSessionId,
+                            data: replay
+                        }));
+                    }
                 } else {
                     ws.send(JSON.stringify({ type: 'no_session' }));
                 }
@@ -418,9 +420,6 @@ wss.on('connection', (ws, req) => {
                     break;
                 }
                 attachToSession(sessionId);
-                if (session.outputBuffer) {
-                    ws.send(JSON.stringify({ type: 'output', sessionId, data: session.outputBuffer }));
-                }
                 ws.send(JSON.stringify({
                     type: 'session_switched',
                     sessionId,
@@ -429,6 +428,12 @@ wss.on('connection', (ws, req) => {
                     mode: session.mode || 'chat',
                     files: session.files
                 }));
+                const replay = session.mode === 'terminal'
+                    ? (session.terminalReplayBuffer || session.outputBuffer || '')
+                    : (session.outputBuffer || '');
+                if (replay) {
+                    ws.send(JSON.stringify({ type: 'output', sessionId, data: replay }));
+                }
                 break;
             }
 
