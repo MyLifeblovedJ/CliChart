@@ -25,28 +25,6 @@
             "command": "gemini",
             "args": [],
             "description": "Google Gemini AI 助手",
-            "models": [
-                {
-                    "id": "gemini-2.5-pro",
-                    "name": "Gemini 2.5 Pro",
-                    "flag": "-m gemini-2.5-pro"
-                },
-                {
-                    "id": "gemini-2.5-flash",
-                    "name": "Gemini 2.5 Flash",
-                    "flag": "-m gemini-2.5-flash"
-                },
-                {
-                    "id": "gemini-2.5-flash-lite",
-                    "name": "Gemini 2.5 Flash-Lite",
-                    "flag": "-m gemini-2.5-flash-lite"
-                },
-                {
-                    "id": "default",
-                    "name": "默认/自动（CLI 默认）",
-                    "flag": ""
-                }
-            ],
             "fileRefPrefix": "@",
             "workingDirectory": null
         },
@@ -56,33 +34,6 @@
             "command": "codex",
             "args": [],
             "description": "OpenAI Codex 编程助手",
-            "models": [
-                {
-                    "id": "gpt-5.3-codex",
-                    "name": "gpt-5.3-codex",
-                    "flag": "--model gpt-5.3-codex"
-                },
-                {
-                    "id": "gpt-5.2-codex",
-                    "name": "gpt-5.2-codex",
-                    "flag": "--model gpt-5.2-codex"
-                },
-                {
-                    "id": "o3",
-                    "name": "o3",
-                    "flag": "--model o3"
-                },
-                {
-                    "id": "o4-mini",
-                    "name": "o4-mini",
-                    "flag": "--model o4-mini"
-                },
-                {
-                    "id": "default",
-                    "name": "默认/自动（CLI 默认）",
-                    "flag": ""
-                }
-            ],
             "fileRefPrefix": "@",
             "workingDirectory": null
         }
