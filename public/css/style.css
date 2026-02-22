@@ -864,6 +864,19 @@ body {
   text-align: center;
   color: #e8f0fa;
   letter-spacing: -0.5px;
+  animation: prechat-fade-in 0.45s ease both;
+}
+
+@keyframes prechat-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .prechat-options {
@@ -1016,7 +1029,7 @@ body {
 .chat-model-badge {
   display: inline-flex;
   align-items: center;
-  font-size: 18px;
+  font-size: 20px;
   line-height: 1.2;
   font-weight: 650;
   color: #e5eefb;
@@ -1033,16 +1046,16 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 32px;
+  height: 32px;
   border-radius: 999px;
   border: 1px solid var(--border-color);
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .chat-model-badge-icon .agent-icon-img {
-  width: 15px;
-  height: 15px;
+  width: 22px;
+  height: 22px;
 }
 
 .chat-model-badge-text {
@@ -1125,12 +1138,10 @@ body {
   align-self: center;
   width: min(84ch, 92%);
   height: 1px;
-  background: linear-gradient(
-    to right,
-    rgba(140, 160, 188, 0),
-    rgba(140, 160, 188, 0.5),
-    rgba(140, 160, 188, 0)
-  );
+  background: linear-gradient(to right,
+      rgba(140, 160, 188, 0),
+      rgba(140, 160, 188, 0.5),
+      rgba(140, 160, 188, 0));
   margin: 6px 0 -2px;
 }
 
@@ -1339,6 +1350,7 @@ body {
   from {
     transform: rotate(0deg);
   }
+
   to {
     transform: rotate(360deg);
   }
@@ -1624,6 +1636,80 @@ body {
 .btn-send:hover {
   transform: scale(1.05);
   box-shadow: 0 2px 8px rgba(88, 166, 255, 0.3);
+}
+
+/* ========== 底部发送按钮（箭头 → 红色脉冲） ========== */
+.btn-chat-send {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: linear-gradient(135deg, var(--accent-blue), #4493f8);
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  position: relative;
+  transition: all 0.28s ease;
+}
+
+.btn-chat-send:hover {
+  transform: scale(1.08);
+  box-shadow: 0 2px 10px rgba(88, 166, 255, 0.35);
+}
+
+.btn-chat-send .send-arrow-icon {
+  display: block;
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+
+.btn-chat-send .send-loading-dot {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  opacity: 0;
+  transform: scale(0);
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+
+/* loading 状态：红色脉冲 */
+.btn-chat-send.loading {
+  background: #e53935;
+  box-shadow: 0 0 0 0 rgba(229, 57, 53, 0.5);
+  animation: send-btn-pulse 1.6s ease-in-out infinite;
+  cursor: default;
+}
+
+.btn-chat-send.loading:hover {
+  transform: none;
+}
+
+.btn-chat-send.loading .send-arrow-icon {
+  opacity: 0;
+  transform: scale(0.5);
+}
+
+.btn-chat-send.loading .send-loading-dot {
+  opacity: 1;
+  transform: scale(1);
+}
+
+@keyframes send-btn-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(229, 57, 53, 0.5);
+  }
+
+  50% {
+    box-shadow: 0 0 0 10px rgba(229, 57, 53, 0);
+  }
+
+  100% {
+    box-shadow: 0 0 0 0 rgba(229, 57, 53, 0);
+  }
 }
 
 /* ========== @ 引用弹窗 ========== */

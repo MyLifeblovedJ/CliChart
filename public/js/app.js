@@ -166,6 +166,10 @@ function refreshPrechatTitle(options = {}) {
     if (!titleEl) return;
     const idx = Math.floor(Math.random() * PRECHAT_TITLES.length);
     titleEl.textContent = PRECHAT_TITLES[idx];
+    // 重触发淡入动画
+    titleEl.style.animation = 'none';
+    void titleEl.offsetWidth;
+    titleEl.style.animation = '';
 }
 
 function resetConversationEntryState(shouldRefreshTitle = true) {
@@ -232,6 +236,8 @@ function updateAssistantPendingText() {
 function setAssistantPending(pending) {
     const loadingEl = document.getElementById('chatLoading');
     if (!loadingEl) return;
+    // 同步更新底部发送按钮状态
+    const chatSendBtn = document.getElementById('chatSendBtn');
     if (!pending) {
         isAwaitingAssistant = false;
         assistantWaitStartedAt = 0;
@@ -240,12 +246,14 @@ function setAssistantPending(pending) {
             assistantWaitTimer = null;
         }
         loadingEl.style.display = 'none';
+        if (chatSendBtn) chatSendBtn.classList.remove('loading');
         return;
     }
     if (isAwaitingAssistant) return;
     isAwaitingAssistant = true;
     assistantWaitStartedAt = Date.now();
     loadingEl.style.display = 'inline-flex';
+    if (chatSendBtn) chatSendBtn.classList.add('loading');
     updateAssistantPendingText();
     if (assistantWaitTimer) clearInterval(assistantWaitTimer);
     assistantWaitTimer = setInterval(updateAssistantPendingText, 1000);
@@ -789,6 +797,15 @@ function setupEventListeners() {
         });
     });
 
+    // 底部发送按钮事件
+    const chatSendBtn = document.getElementById('chatSendBtn');
+    if (chatSendBtn) {
+        chatSendBtn.addEventListener('click', () => {
+            if (chatSendBtn.classList.contains('loading')) return; // 加载中不重复发送
+            sendMessage();
+        });
+    }
+
     if (prechatSendBtn) prechatSendBtn.addEventListener('click', startPrechatConversation);
     if (prechatInput) {
         prechatInput.addEventListener('keydown', (e) => {
@@ -1293,9 +1310,9 @@ function escapeHtml(text) {
         .replace(/'/g, '&#39;');
 }
 
-function getAgentIcon(agentId) {
-    if (agentId === 'codex') return '<img src="/icons/openai-light.svg" alt="ChatGPT" width="14" height="14" class="agent-icon-img">';
-    if (agentId === 'gemini') return '<img src="/icons/gemini-color.svg" alt="Gemini" width="14" height="14" class="agent-icon-img">';
+function getAgentIcon(agentId, size = 14) {
+    if (agentId === 'codex') return `<img src="/icons/openai-light.svg" alt="ChatGPT" width="${size}" height="${size}" class="agent-icon-img">`;
+    if (agentId === 'gemini') return `<img src="/icons/gemini-color.svg" alt="Gemini" width="${size}" height="${size}" class="agent-icon-img">`;
     return '🤖';
 }
 
@@ -1342,6 +1359,7 @@ async function openHistory(sessionId) {
         currentSessionId = null;
         activeSessionMeta = null;
         showAgentUI(false);
+        updateChatModelBadge();
         updateSessionStatus();
         updateSessionActionButtons();
         showToast('正在查看历史记录（只读）', 'info');
@@ -1466,7 +1484,8 @@ function updateChatModelBadge() {
     if (!el) return;
     const { agentId, modelId, title } = getCenterBadgeMeta();
     const label = escapeHtml(title ? `${getAgentDisplayName(agentId)} · ${title}` : getSessionDisplayName(agentId, modelId));
-    const icon = getAgentIcon(agentId);
+    // 使用大图标（22px）用于中间 badge 展示
+    const icon = getAgentIcon(agentId, 22);
     el.innerHTML = `
       <span class="chat-model-badge-inner">
         <span class="chat-model-badge-icon">${icon}</span>
@@ -1569,6 +1588,7 @@ function handleMessage(msg) {
             setPendingMode(sessionMode, true);
             showAgentUI(true);
             setInputEnabled(true);
+            updateChatModelBadge();
             resetChatView();
             loadActiveSessions().then(renderHistoryList);
             if (pendingUserMessage) {
@@ -1606,6 +1626,7 @@ function handleMessage(msg) {
             showAgentUI(true);
             setSelectedAgent(msg.agentId, true);
             setPendingMode(sessionMode, true);
+            updateChatModelBadge();
             if (msg.files) {
                 sessionFiles = msg.files;
                 renderFileTree();
