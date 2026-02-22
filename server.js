@@ -226,9 +226,10 @@ wss.on('connection', (ws, req) => {
             sessionManager.removeSubscriber(currentSessionId, currentSubscriber);
         }
         currentSessionId = sessionId;
+        const boundSessionId = sessionId;
         currentSubscriber = (data) => {
             if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'output', data }));
+                ws.send(JSON.stringify({ type: 'output', sessionId: boundSessionId, data }));
             }
         };
         sessionManager.addSubscriber(sessionId, currentSubscriber);
@@ -388,6 +389,7 @@ wss.on('connection', (ws, req) => {
                     if (session && session.outputBuffer) {
                         ws.send(JSON.stringify({
                             type: 'output',
+                            sessionId: existingSessionId,
                             data: session.outputBuffer
                         }));
                     }
@@ -417,7 +419,7 @@ wss.on('connection', (ws, req) => {
                 }
                 attachToSession(sessionId);
                 if (session.outputBuffer) {
-                    ws.send(JSON.stringify({ type: 'output', data: session.outputBuffer }));
+                    ws.send(JSON.stringify({ type: 'output', sessionId, data: session.outputBuffer }));
                 }
                 ws.send(JSON.stringify({
                     type: 'session_switched',

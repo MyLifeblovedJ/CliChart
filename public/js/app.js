@@ -33,6 +33,7 @@ let bottomBarHideTimer = null;
 let isAwaitingAssistant = false;
 let assistantWaitStartedAt = 0;
 let assistantWaitTimer = null;
+const recentUserLinesBySession = new Map();
 const PRECHAT_TITLES = [
     '今天想要问点什么？',
     '你今日有什么安排吗？',
@@ -229,6 +230,46 @@ function setAssistantPending(pending) {
     assistantWaitTimer = setInterval(updateAssistantPendingText, 1000);
 }
 
+function normalizeLineForEcho(text) {
+    return String(text || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .replace(/[。！？.!?]+$/g, '')
+        .toLowerCase();
+}
+
+function rememberUserLine(sessionId, text) {
+    const sid = sessionId || currentSessionId;
+    if (!sid) return;
+    const normalized = normalizeLineForEcho(text);
+    if (!normalized) return;
+    const list = recentUserLinesBySession.get(sid) || [];
+    list.push(normalized);
+    if (list.length > 30) {
+        list.splice(0, list.length - 30);
+    }
+    recentUserLinesBySession.set(sid, list);
+}
+
+function getRememberedUserLineSet(sessionId) {
+    const sid = sessionId || currentSessionId;
+    if (!sid) return new Set();
+    return new Set(recentUserLinesBySession.get(sid) || []);
+}
+
+function stripEchoedUserLines(text, rememberedSet) {
+    if (!text) return '';
+    if (!rememberedSet || rememberedSet.size === 0) return text;
+    const filtered = text
+        .split('\n')
+        .filter(line => {
+            const normalized = normalizeLineForEcho(line);
+            if (!normalized) return false;
+            return !rememberedSet.has(normalized);
+        });
+    return filtered.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 const ANSI_ESCAPE_RE = /[\u001b\u009b][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[a-zA-Z\d]*)*)?\u0007)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g;
 const NOISE_LINE_PATTERNS = [
     /^(r?oot)@[^#]+#\s*(codex|gemini)?\s*$/i,
@@ -314,6 +355,7 @@ function shouldDropChatLine(line) {
     if (/^(\d+%|\d+s)\b/.test(trimmed)) return true;
     if (!hasCjk && hasExcessiveRepeats(trimmed)) return true;
     if (!hasCjk && lettersOnly.length >= 28 && trimmed.split(/\s+/).length <= 3) return true;
+    if (!hasCjk && /^[a-z]{2,4}$/.test(trimmed)) return true;
     if (!hasCjk && words.length >= 2 && words.length <= 4) {
         const shortWordCount = words.filter(w => w.length <= 2).length;
         const looksAscii = /^[a-z0-9: ._-]+$/i.test(trimmed);
@@ -463,24 +505,26 @@ function enhanceMessageHtml(messageEl) {
     });
 }
 
-function appendAssistantChunk(chunk) {
+function appendAssistantChunk(chunk, sessionId = currentSessionId) {
     const cleaned = sanitizeTerminalOutputForChat(chunk);
     if (!cleaned) return false;
+    const noEcho = stripEchoedUserLines(cleaned, getRememberedUserLineSet(sessionId));
+    if (!noEcho) return false;
     setAssistantPending(false);
     const container = document.getElementById('chatMessages');
     if (!lastAssistantEl || lastAssistantEl.dataset.role !== 'assistant') {
         const el = document.createElement('div');
         el.className = 'chat-message assistant';
         el.dataset.role = 'assistant';
-        el.dataset.raw = cleaned;
-        el.innerHTML = renderMarkdown(cleaned);
+        el.dataset.raw = noEcho;
+        el.innerHTML = renderMarkdown(noEcho);
         enhanceMessageHtml(el);
         container.appendChild(el);
         lastAssistantEl = el;
     } else {
         const previous = lastAssistantEl.dataset.raw || '';
-        if (previous.endsWith(cleaned)) return;
-        const combined = previous ? `${previous}\n${cleaned}` : cleaned;
+        if (previous.endsWith(noEcho)) return true;
+        const combined = previous ? `${previous}\n${noEcho}` : noEcho;
         lastAssistantEl.dataset.raw = combined;
         lastAssistantEl.innerHTML = renderMarkdown(combined);
         enhanceMessageHtml(lastAssistantEl);
@@ -497,6 +541,7 @@ function addUserMessage(text) {
     el.textContent = text;
     container.appendChild(el);
     lastAssistantEl = null;
+    rememberUserLine(currentSessionId, text);
     container.scrollTop = container.scrollHeight;
 }
 
@@ -505,6 +550,7 @@ function renderChatMessages(messages) {
     container.innerHTML = '';
     lastAssistantEl = null;
     setAssistantPending(false);
+    const seenUserLines = new Set();
     messages.forEach(m => {
         const el = document.createElement('div');
         el.className = `chat-message ${m.role}`;
@@ -512,11 +558,14 @@ function renderChatMessages(messages) {
         if (m.role === 'assistant') {
             const cleaned = sanitizeTerminalOutputForChat(m.content);
             if (!cleaned) return;
-            el.dataset.raw = cleaned;
-            el.innerHTML = renderMarkdown(cleaned);
+            const noEcho = stripEchoedUserLines(cleaned, seenUserLines);
+            if (!noEcho) return;
+            el.dataset.raw = noEcho;
+            el.innerHTML = renderMarkdown(noEcho);
             enhanceMessageHtml(el);
         } else {
             el.textContent = m.content;
+            seenUserLines.add(normalizeLineForEcho(m.content));
         }
         container.appendChild(el);
     });
@@ -1206,6 +1255,9 @@ function connectWebSocket() {
 function handleMessage(msg) {
     switch (msg.type) {
         case 'output':
+            if (msg.sessionId && currentSessionId && msg.sessionId !== currentSessionId) {
+                break;
+            }
             terminalRawBuffer += msg.data || '';
             if (terminalRawBuffer.length > 200000) {
                 terminalRawBuffer = terminalRawBuffer.slice(-160000);
@@ -1214,13 +1266,16 @@ function handleMessage(msg) {
             const hasUserBubble = Boolean(document.querySelector('#chatMessages .chat-message.user'));
             const shouldRenderToChat = sessionMode === 'chat' && hasUserBubble && (!historyModeSessionId || historyModeSessionId === currentSessionId);
             if (shouldRenderToChat) {
-                appendAssistantChunk(msg.data);
+                appendAssistantChunk(msg.data, msg.sessionId || currentSessionId);
             }
             break;
         case 'started':
             currentAgent = msg.agentId;
             currentModel = msg.modelId;
             currentSessionId = msg.sessionId;
+            if (!recentUserLinesBySession.has(currentSessionId)) {
+                recentUserLinesBySession.set(currentSessionId, []);
+            }
             isStartingSession = false;
             historyModeSessionId = null;
             activeSessionMeta = {
@@ -1251,6 +1306,9 @@ function handleMessage(msg) {
             currentAgent = msg.agentId;
             currentModel = msg.modelId;
             currentSessionId = msg.sessionId;
+            if (!recentUserLinesBySession.has(currentSessionId)) {
+                recentUserLinesBySession.set(currentSessionId, []);
+            }
             isStartingSession = false;
             historyModeSessionId = null;
             activeSessionMeta = {
@@ -1283,6 +1341,9 @@ function handleMessage(msg) {
             setAssistantPending(false);
             break;
         case 'stopped':
+            if (currentSessionId) {
+                recentUserLinesBySession.delete(currentSessionId);
+            }
             currentAgent = '';
             currentModel = '';
             currentSessionId = null;
@@ -1295,6 +1356,9 @@ function handleMessage(msg) {
             loadActiveSessions().then(loadHistory);
             break;
         case 'exit':
+            if (currentSessionId) {
+                recentUserLinesBySession.delete(currentSessionId);
+            }
             currentAgent = '';
             currentSessionId = null;
             activeSessionMeta = null;
@@ -1313,6 +1377,9 @@ function handleMessage(msg) {
             currentAgent = msg.agentId;
             currentModel = msg.modelId;
             currentSessionId = msg.sessionId;
+            if (!recentUserLinesBySession.has(currentSessionId)) {
+                recentUserLinesBySession.set(currentSessionId, []);
+            }
             isStartingSession = false;
             historyModeSessionId = null;
             activeSessionMeta = {
@@ -1336,6 +1403,7 @@ function handleMessage(msg) {
             loadTranscriptIntoChat(msg.sessionId);
             break;
         case 'session_stopped':
+            recentUserLinesBySession.delete(msg.sessionId);
             if (currentSessionId === msg.sessionId) {
                 currentSessionId = null;
                 isStartingSession = false;
@@ -1619,9 +1687,6 @@ function sendMessage() {
         return;
     }
 
-    addUserMessage(text);
-    if (sessionMode === 'chat') setAssistantPending(true);
-
     if (!currentSessionId) {
         const agentId = getSelectedAgentId();
         const modelId = getSelectedModelId();
@@ -1630,6 +1695,7 @@ function sendMessage() {
             return;
         }
         pendingUserMessage = text;
+        if (sessionMode === 'chat') setAssistantPending(true);
         if (!isStartingSession) {
             isStartingSession = true;
             terminalRawBuffer = '';
@@ -1641,6 +1707,8 @@ function sendMessage() {
             startAgent(agentId, modelId);
         }
     } else {
+        addUserMessage(text);
+        if (sessionMode === 'chat') setAssistantPending(true);
         // 发送用户消息到后端（由后端写入终端）
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'user_message', text }));
