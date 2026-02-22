@@ -220,9 +220,16 @@ wss.on('connection', (ws, req) => {
     console.log(`[WebSocket] 用户 ${username} 已连接`);
     let currentSessionId = null;
     let currentSubscriber = null;
+    // 记录客户端离开每个会话时 outputBuffer 的长度，切回时只发送增量
+    const sessionBufferOffsets = new Map();
 
     const attachToSession = (sessionId) => {
         if (currentSessionId && currentSubscriber) {
+            // 离开旧会话前，记录已经看过的 outputBuffer 长度
+            const oldSession = sessionManager.getSession(currentSessionId);
+            if (oldSession) {
+                sessionBufferOffsets.set(currentSessionId, oldSession.outputBuffer.length);
+            }
             sessionManager.removeSubscriber(currentSessionId, currentSubscriber);
         }
         currentSessionId = sessionId;
@@ -381,7 +388,7 @@ wss.on('connection', (ws, req) => {
                 break;
             }
 
-            // 恢复已有会话
+            // 恢复已有会话（首次连接/重连时）
             case 'resume': {
                 const existingSessionId = sessionManager.getUserActiveSession(username);
                 if (existingSessionId) {
@@ -395,7 +402,7 @@ wss.on('connection', (ws, req) => {
                         mode: session.mode || 'chat',
                         files: session.files
                     }));
-                    // 终端模式使用 outputBuffer（原始 ANSI 数据），xterm 需要完整转义序列才能正确渲染
+                    // 首次连接/重连：发送完整 outputBuffer（客户端没有缓存）
                     const replay = session?.mode === 'terminal'
                         ? (session.outputBuffer || '')
                         : '';
@@ -406,6 +413,8 @@ wss.on('connection', (ws, req) => {
                             data: replay
                         }));
                     }
+                    // 标记已看过的位置
+                    sessionBufferOffsets.set(existingSessionId, (session.outputBuffer || '').length);
                 } else {
                     ws.send(JSON.stringify({ type: 'no_session' }));
                 }
@@ -430,19 +439,28 @@ wss.on('connection', (ws, req) => {
                     mode: session.mode || 'chat',
                     files: session.files
                 }));
-                // 终端模式使用 outputBuffer（原始 ANSI 数据），xterm 需要完整转义序列才能正确渲染
-                const replay = session.mode === 'terminal'
-                    ? (session.outputBuffer || '')
+                // 只发送客户端离开后错过的增量输出，而非全量历史
+                const lastOffset = sessionBufferOffsets.get(sessionId) || 0;
+                const fullBuffer = session.outputBuffer || '';
+                const deltaReplay = session.mode === 'terminal'
+                    ? fullBuffer.slice(lastOffset)
                     : '';
-                if (replay) {
-                    ws.send(JSON.stringify({ type: 'output', sessionId, data: replay }));
+                if (deltaReplay) {
+                    ws.send(JSON.stringify({ type: 'output', sessionId, data: deltaReplay }));
                 }
+                // 更新 offset 到最新
+                sessionBufferOffsets.set(sessionId, fullBuffer.length);
                 break;
             }
 
             // 解除当前会话绑定（不停止会话）
             case 'detach_session': {
                 if (currentSessionId && currentSubscriber) {
+                    // 记录 offset
+                    const oldSession = sessionManager.getSession(currentSessionId);
+                    if (oldSession) {
+                        sessionBufferOffsets.set(currentSessionId, oldSession.outputBuffer.length);
+                    }
                     sessionManager.removeSubscriber(currentSessionId, currentSubscriber);
                     currentSessionId = null;
                     currentSubscriber = null;

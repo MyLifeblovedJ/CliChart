@@ -38,6 +38,8 @@ let assistantWaitTimer = null;
 const recentUserLinesBySession = new Map();
 const transcriptCache = new Map();
 const assistantStreamStateBySession = new Map();
+// 保存每个终端会话的原始输出缓冲，切换时恢复
+const sessionTerminalBuffers = new Map();
 const PRECHAT_TITLES = [
     '今天想要问点什么？',
     '你今日有什么安排吗？',
@@ -1620,6 +1622,7 @@ function handleMessage(msg) {
                 recentUserLinesBySession.set(currentSessionId, []);
             }
             clearAssistantStreamState(currentSessionId);
+            // 首次连接/重连：清空 buffer，等服务端发完整 replay
             terminalRawBuffer = '';
             // 恢复会话时销毁旧终端实例，防止内容错乱
             if (term) {
@@ -1706,7 +1709,12 @@ function handleMessage(msg) {
             activeSessions = msg.sessions || [];
             renderHistoryList();
             break;
-        case 'session_switched':
+        case 'session_switched': {
+            // 先保存旧会话的终端缓冲（切走前啥样）
+            const prevSessionId = currentSessionId;
+            if (prevSessionId && terminalRawBuffer) {
+                sessionTerminalBuffers.set(prevSessionId, terminalRawBuffer);
+            }
             currentAgent = msg.agentId;
             currentModel = msg.modelId;
             currentSessionId = msg.sessionId;
@@ -1715,8 +1723,9 @@ function handleMessage(msg) {
                 recentUserLinesBySession.set(currentSessionId, []);
             }
             clearAssistantStreamState(currentSessionId);
-            terminalRawBuffer = '';
-            // 切换会话时销毁旧终端实例，防止内容错乱
+            // 恢复目标会话的缓冲（切回来啥样），服务端只发增量
+            terminalRawBuffer = sessionTerminalBuffers.get(msg.sessionId) || '';
+            // 销毁旧终端实例，重建并写入恢复的缓冲
             if (term) {
                 term.dispose();
                 term = null;
@@ -1748,6 +1757,7 @@ function handleMessage(msg) {
             }
             loadActiveSessions().then(renderHistoryList);
             break;
+        }
         case 'session_stopped':
             recentUserLinesBySession.delete(msg.sessionId);
             clearAssistantStreamState(msg.sessionId);
