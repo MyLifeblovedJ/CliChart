@@ -948,8 +948,8 @@ function escapeHtml(text) {
 }
 
 function getAgentIcon(agentId) {
-    if (agentId === 'gemini') return '✨';
-    if (agentId === 'codex') return '🌀';
+    if (agentId === 'codex') return '<img src="/icons/openai.svg" alt="ChatGPT" width="14" height="14" style="display:block;">';
+    if (agentId === 'gemini') return '<img src="/icons/gemini-color.svg" alt="Gemini" width="14" height="14" style="display:block;">';
     return '🤖';
 }
 

@@ -65,11 +65,13 @@
                             <div class="selector-row" id="prechatAgentSelector">
                                 <button class="selector-option agent-option active" data-agent="codex" title="ChatGPT"
                                     data-tooltip="ChatGPT：通用对话能力更强，适合日常问题与文档生成">
-                                    <span class="selector-icon">🌀</span>
+                                    <span class="selector-icon"><img src="/icons/openai.svg" alt="ChatGPT" width="24"
+                                            height="24"></span>
                                 </button>
                                 <button class="selector-option agent-option" data-agent="gemini" title="Gemini"
                                     data-tooltip="Gemini：多模态表现较好，适合图文与结构化分析">
-                                    <span class="selector-icon">✨</span>
+                                    <span class="selector-icon"><img src="/icons/gemini-color.svg" alt="Gemini"
+                                            width="24" height="24"></span>
                                 </button>
                             </div>
                         </div>
@@ -121,8 +123,7 @@
             <input type="file" id="fileInput" multiple style="display:none;">
             <button class="btn-upload btn-upload-inline" id="uploadBtn" title="上传文件/图片">📎</button>
             <div class="input-wrapper">
-                <textarea id="messageInput" placeholder="输入消息...（Enter 发送，Shift+Enter 换行，@ 引用文件）"
-                    rows="1"></textarea>
+                <textarea id="messageInput" placeholder="输入消息...（Enter 发送，Shift+Enter 换行，@ 引用文件）" rows="1"></textarea>
                 <!-- @ 引用弹窗 -->
                 <div class="at-popup" id="atPopup" style="display:none;">
                     <div class="at-popup-title">引用文件</div>

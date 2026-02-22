@@ -889,6 +889,15 @@ body {
 
 .selector-icon {
   font-size: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.selector-icon img {
+  display: block;
+  object-fit: contain;
 }
 
 .prechat-composer {
@@ -1117,7 +1126,7 @@ body {
   text-underline-offset: 2px;
 }
 
-.chat-message > code,
+.chat-message>code,
 .chat-message p code,
 .chat-message li code {
   background: rgba(88, 166, 255, 0.1);
