@@ -395,8 +395,9 @@ wss.on('connection', (ws, req) => {
                         mode: session.mode || 'chat',
                         files: session.files
                     }));
+                    // 终端模式使用 outputBuffer（原始 ANSI 数据），xterm 需要完整转义序列才能正确渲染
                     const replay = session?.mode === 'terminal'
-                        ? (session.terminalReplayBuffer || session.outputBuffer || '')
+                        ? (session.outputBuffer || '')
                         : '';
                     if (replay) {
                         ws.send(JSON.stringify({
@@ -429,8 +430,9 @@ wss.on('connection', (ws, req) => {
                     mode: session.mode || 'chat',
                     files: session.files
                 }));
+                // 终端模式使用 outputBuffer（原始 ANSI 数据），xterm 需要完整转义序列才能正确渲染
                 const replay = session.mode === 'terminal'
-                    ? (session.terminalReplayBuffer || session.outputBuffer || '')
+                    ? (session.outputBuffer || '')
                     : '';
                 if (replay) {
                     ws.send(JSON.stringify({ type: 'output', sessionId, data: replay }));
