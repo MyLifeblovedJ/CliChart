@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CliChat - 聊天</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <!-- xterm.js 终端渲染 -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.5/dist/purify.min.js"></script>
+</head>
+
+<body class="chat-page">
+    <!-- 顶栏 -->
+    <header class="top-bar">
+        <div class="top-left">
+            <span class="logo-icon">⚡</span>
+            <span class="app-name">CliChat</span>
+        </div>
+        <div class="top-right">
+            <span class="username" id="usernameDisplay"></span>
+            <button id="logoutBtn" class="btn-text-only">退出</button>
+        </div>
+    </header>
+
+    <!-- 主内容区 -->
+    <div class="main-content">
+        <!-- 左侧文件面板 -->
+        <aside class="history-panel" id="historyPanel">
+            <div class="panel-section">
+                <div class="panel-header">
+                    <div class="history-actions-bar">
+                        <button class="icon-action-btn" id="newChatBtn" title="新建会话">
+                            <span class="action-icon">＋</span>
+                            <span class="action-label">新聊天</span>
+                        </button>
+                        <button class="icon-action-btn" id="toggleHistorySearchBtn" title="搜索聊天">
+                            <span class="action-icon">🔍</span>
+                            <span class="action-label">搜索聊天</span>
+                        </button>
+                    </div>
+                </div>
+                <div class="history-search" id="historySearchWrap">
+                    <input type="text" id="historySearch" placeholder="搜索..." />
+                </div>
+                <div class="history-list" id="historyList">
+                    <div class="file-tree-empty">暂无历史</div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- 终端区域 -->
+        <div class="terminal-container" id="terminalContainer">
+            <div class="chat-view" id="chatView">
+                <div class="prechat-screen" id="prechatScreen">
+                    <h1 class="prechat-title" id="prechatTitle">今天想问点什么？</h1>
+                    <div class="prechat-options">
+                        <div class="selector-group">
+                            <span class="selector-label">选择模型</span>
+                            <div class="selector-row" id="prechatAgentSelector">
+                                <button class="selector-option agent-option active" data-agent="codex" title="ChatGPT"
+                                    data-tooltip="ChatGPT：通用对话能力更强，适合日常问题与文档生成">
+                                    <span class="selector-icon">🌀</span>
+                                </button>
+                                <button class="selector-option agent-option" data-agent="gemini" title="Gemini"
+                                    data-tooltip="Gemini：多模态表现较好，适合图文与结构化分析">
+                                    <span class="selector-icon">✨</span>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="selector-group">
+                            <span class="selector-label">选择模式</span>
+                            <div class="selector-row" id="prechatModeSelector">
+                                <button class="selector-option mode-option active" data-mode="chat" title="UI 对话模式"
+                                    data-tooltip="UI 模式：阅读更舒适，适合一般用户连续对话">
+                                    <span class="selector-icon">💬</span>
+                                </button>
+                                <button class="selector-option mode-option" data-mode="terminal" title="终端模式"
+                                    data-tooltip="终端模式：原始 CLI 交互，适合程序员与命令操作">
+                                    <span class="selector-icon">🖥️</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="prechat-composer">
+                        <textarea id="prechatInput" placeholder="给 ChatGPT 发送消息..." rows="4"></textarea>
+                        <button id="prechatSendBtn" class="btn-send prechat-send" title="发送">➤</button>
+                    </div>
+                </div>
+                <div class="chat-stream" id="chatStream" style="display:none;">
+                    <div class="chat-stream-header">
+                        <span class="chat-model-badge" id="chatModelBadge">ChatGPT</span>
+                    </div>
+                    <div class="chat-messages" id="chatMessages"></div>
+                    <div class="chat-tip" id="chatTip">当前为友好对话视图</div>
+                </div>
+            </div>
+            <div id="terminal" style="display:none;"></div>
+        </div>
+
+        <!-- 右侧文件面板 -->
+        <aside class="file-panel right-panel" id="filePanel">
+            <div class="panel-header">
+                <h3>📁 会话文件</h3>
+            </div>
+            <div class="file-tree" id="fileTree">
+                <div class="file-tree-empty">暂无文件，可拖拽文件到此处</div>
+            </div>
+        </aside>
+        <button class="file-panel-toggle-fixed" id="filePanelToggle" title="收起文件栏">⟩</button>
+    </div>
+
+    <!-- 底部工具栏 -->
+    <div class="bottom-bar" id="bottomBar" style="display:none;">
+        <div class="input-area" id="inputArea">
+            <input type="file" id="fileInput" multiple style="display:none;">
+            <button class="btn-upload btn-upload-inline" id="uploadBtn" title="上传文件/图片">📎</button>
+            <div class="input-wrapper">
+                <textarea id="messageInput" placeholder="输入消息...（Enter 发送，Shift+Enter 换行，@ 引用文件）"
+                    rows="1"></textarea>
+                <!-- @ 引用弹窗 -->
+                <div class="at-popup" id="atPopup" style="display:none;">
+                    <div class="at-popup-title">引用文件</div>
+                    <div class="at-popup-list" id="atPopupList"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 拖拽上传覆盖层 -->
+    <div class="drag-overlay" id="dragOverlay" style="display:none;">
+        <div class="drag-content">
+            <span>📁</span>
+            <p>松开以上传文件</p>
+        </div>
+    </div>
+
+    <!-- 通知提示 -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script src="/js/app.js"></script>
+</body>
+
+</html>

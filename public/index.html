@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CliChat - 登录</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="login-page">
+  <div class="login-container">
+    <div class="login-card">
+      <div class="login-header">
+        <div class="logo">
+          <span class="logo-icon">⚡</span>
+          <h1>CliChat</h1>
+        </div>
+        <p class="subtitle">CLI Agent Web 终端</p>
+      </div>
+
+      <form id="loginForm" class="login-form">
+        <div class="form-group">
+          <label for="username">用户名</label>
+          <input type="text" id="username" name="username" placeholder="请输入用户名" autocomplete="username" required>
+        </div>
+        <div class="form-group">
+          <label for="password">密码</label>
+          <input type="password" id="password" name="password" placeholder="请输入密码" autocomplete="current-password" required>
+        </div>
+        <div id="loginError" class="error-msg" style="display:none;"></div>
+        <button type="submit" class="btn-primary" id="loginBtn">
+          <span class="btn-text">登 录</span>
+          <span class="btn-loading" style="display:none;">⏳</span>
+        </button>
+      </form>
+
+      <div class="login-footer">
+        <p>服务器端 AI CLI 工具的 Web 访问入口</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (async () => {
+      try {
+        const res = await fetch('/api/auth/check', { credentials: 'same-origin' });
+        const data = await res.json();
+        if (data.authenticated) {
+          window.location.href = '/chat';
+        }
+      } catch {}
+    })();
+
+    const form = document.getElementById('loginForm');
+    const errorEl = document.getElementById('loginError');
+    const loginBtn = document.getElementById('loginBtn');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errorEl.style.display = 'none';
+      loginBtn.querySelector('.btn-text').style.display = 'none';
+      loginBtn.querySelector('.btn-loading').style.display = 'inline';
+      loginBtn.disabled = true;
+
+      try {
+        const res = await fetch('/api/login', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: document.getElementById('username').value,
+            password: document.getElementById('password').value
+          })
+        });
+        const data = await res.json();
+
+        if (data.success) {
+          window.location.href = '/chat';
+        } else {
+          errorEl.textContent = data.error || '登录失败';
+          errorEl.style.display = 'block';
+        }
+      } catch (err) {
+        errorEl.textContent = '网络错误，请稍后重试';
+        errorEl.style.display = 'block';
+      } finally {
+        loginBtn.querySelector('.btn-text').style.display = 'inline';
+        loginBtn.querySelector('.btn-loading').style.display = 'none';
+        loginBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
