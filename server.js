@@ -396,7 +396,7 @@ wss.on('connection', (ws, req) => {
                     }));
                     const replay = session?.mode === 'terminal'
                         ? (session.terminalReplayBuffer || session.outputBuffer || '')
-                        : (session?.outputBuffer || '');
+                        : '';
                     if (replay) {
                         ws.send(JSON.stringify({
                             type: 'output',
@@ -430,7 +430,7 @@ wss.on('connection', (ws, req) => {
                 }));
                 const replay = session.mode === 'terminal'
                     ? (session.terminalReplayBuffer || session.outputBuffer || '')
-                    : (session.outputBuffer || '');
+                    : '';
                 if (replay) {
                     ws.send(JSON.stringify({ type: 'output', sessionId, data: replay }));
                 }

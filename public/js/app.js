@@ -60,6 +60,9 @@ const PRECHAT_TITLES = [
     '你输入需求，我来给执行路径',
     '今天先把哪件事推进到可交付？'
 ];
+const PRECHAT_INIT_GUARD_KEY = '__clichat_prechat_title_init_done__';
+const pendingOutputWhileHydrating = new Map();
+let hydratingTranscriptSessionId = null;
 
 // ========== 初始化 ==========
 document.addEventListener('DOMContentLoaded', async () => {
@@ -68,6 +71,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         window.location.href = '/';
         return;
     }
+    setFilePanelCollapsed(true);
+    setHistorySearchExpanded(false);
     currentUsername = auth.username;
     document.getElementById('usernameDisplay').textContent = `👤 ${currentUsername}`;
     document.getElementById('filePanel').style.display = 'flex';
@@ -77,9 +82,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadActiveSessions();
     await loadHistory();
     setupEventListeners();
-    setFilePanelCollapsed(true);
-    setHistorySearchExpanded(false);
-    resetConversationEntryState();
+    resetConversationEntryState(false);
+    refreshPrechatTitle({ init: true });
     setConnectionStatus(isConnected);
     updateSessionStatus();
     updateSessionActionButtons();
@@ -152,14 +156,21 @@ function updatePrechatComposerState() {
     if (prechatSendBtn) prechatSendBtn.disabled = !ready || !hasText || isStartingSession;
 }
 
-function refreshPrechatTitle() {
+function refreshPrechatTitle(options = {}) {
+    const { init = false } = options;
+    if (init) {
+        if (window[PRECHAT_INIT_GUARD_KEY]) return;
+        window[PRECHAT_INIT_GUARD_KEY] = true;
+    }
     const titleEl = document.getElementById('prechatTitle');
     if (!titleEl) return;
     const idx = Math.floor(Math.random() * PRECHAT_TITLES.length);
     titleEl.textContent = PRECHAT_TITLES[idx];
 }
 
-function resetConversationEntryState() {
+function resetConversationEntryState(shouldRefreshTitle = true) {
+    const fallbackAgent = agentsData.find(a => a.id === 'codex')?.id || agentsData[0]?.id || 'codex';
+    const preferredAgent = selectedAgentId || currentAgent || fallbackAgent;
     currentAgent = '';
     currentModel = '';
     currentSessionId = null;
@@ -174,6 +185,8 @@ function resetConversationEntryState() {
     modeSelectionConfirmed = true;
     focusedSessionId = null;
     pendingUserMessage = null;
+    hydratingTranscriptSessionId = null;
+    pendingOutputWhileHydrating.clear();
     clearAssistantStreamState();
 
     if (term) {
@@ -187,9 +200,9 @@ function resetConversationEntryState() {
         prechatInput.value = '';
     }
 
-    setSelectedAgent('codex', true);
+    setSelectedAgent(preferredAgent, true);
     setPendingMode('chat', true);
-    refreshPrechatTitle();
+    if (shouldRefreshTitle) refreshPrechatTitle();
     showAgentUI(false);
 }
 
@@ -204,6 +217,7 @@ function resetChatView() {
     chatMessages = [];
     lastAssistantEl = null;
     setAssistantPending(false);
+    hydratingTranscriptSessionId = null;
     clearAssistantStreamState(currentSessionId);
     renderChatMessages(chatMessages);
 }
@@ -239,6 +253,10 @@ function setAssistantPending(pending) {
 
 function normalizeLineForEcho(text) {
     return String(text || '')
+        .replace(ANSI_ESCAPE_RE, '')
+        .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e]/g, '')
+        .replace(/^[>›➤•◦:：\-\s]+/, '')
+        .replace(/[“”"'"`]+/g, '')
         .replace(/\s+/g, ' ')
         .trim()
         .replace(/[。！？.!?]+$/g, '')
@@ -281,6 +299,46 @@ function stripEchoedUserLines(text, rememberedSet) {
     return lines.slice(start).join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
+function stripEchoedUserLinesAnywhere(text, rememberedSet) {
+    if (!text) return '';
+    if (!rememberedSet || rememberedSet.size === 0) return text;
+    const kept = text
+        .split('\n')
+        .filter(line => {
+            const normalized = normalizeLineForEcho(line);
+            return !normalized || !rememberedSet.has(normalized);
+        });
+    return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function trimSuspiciousAsciiTailAfterCjk(line) {
+    const raw = String(line || '');
+    const m = raw.match(/^(.*[\u4e00-\u9fff][^A-Za-z0-9]{0,4})([A-Za-z]{7,24})$/);
+    if (!m) return raw;
+    const tail = m[2];
+    if (!/[A-Z]/.test(tail) || !/[a-z]/.test(tail)) return raw;
+    return m[1].trimEnd();
+}
+
+function removeAssistantLinesSeenBefore(text, previousRaw) {
+    if (!text) return '';
+    if (!previousRaw) return text;
+    const prevSet = new Set(
+        String(previousRaw)
+            .split('\n')
+            .map(normalizeLineForEcho)
+            .filter(Boolean)
+    );
+    if (prevSet.size === 0) return text;
+    const kept = String(text)
+        .split('\n')
+        .filter(line => {
+            const normalized = normalizeLineForEcho(line);
+            return !normalized || !prevSet.has(normalized);
+        });
+    return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 const ANSI_ESCAPE_RE = /[\u001b\u009b][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[a-zA-Z\d]*)*)?\u0007)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g;
 const NOISE_LINE_PATTERNS = [
     /^(r?oot)@[^#]+#\s*(codex|gemini)?\s*$/i,
@@ -296,7 +354,16 @@ const NOISE_LINE_PATTERNS = [
     /^preparing\s*(\(|$)/i,
     /^😼\s*已开启代理环境/i,
     /^↳\s+/,
-    /alt\s*\+\s*[↑↓←→].*edit/i
+    /alt\s*\+\s*[↑↓←→].*edit/i,
+    /^\(?use node --trace-deprecation/i,
+    /^to show where the warning was created\)?$/i,
+    /^;?\s*◇\s*ready\b/i,
+    /^logged in with google:/i,
+    /^plan:\s*gemini/i,
+    /^shift\+tab to accept edits/i,
+    /^press ['"]?esc['"]?\s+for\s+normal\s+mode\.?/i,
+    /^\[insert\]\s+/i,
+    /^[a-z]\s*[•◦]$/i
 ];
 const NOISE_SUBSTRINGS = [
     'openai codex',
@@ -308,7 +375,11 @@ const NOISE_SUBSTRINGS = [
     'tab to queue message',
     'booting mcp server',
     'esc to interrupt',
-    '已开启代理环境'
+    '已开启代理环境',
+    'waiting for auth',
+    'no sandbox (see /docs)',
+    'trace-deprecation',
+    'warning was created'
 ];
 
 function stripAnsi(text) {
@@ -349,6 +420,7 @@ function shouldDropChatLine(line) {
     const hasCjk = /[\u4e00-\u9fff]/.test(trimmed);
     if (!trimmed) return true;
     if (trimmed.length <= 1) return true;
+    if (currentAgent === 'gemini' && /^chatgpt$/i.test(trimmed)) return true;
     if (lastUserMessageText && trimmed === lastUserMessageText.trim()) return true;
     if (NOISE_SUBSTRINGS.some(s => lowered.includes(s))) return true;
     if (
@@ -357,7 +429,9 @@ function shouldDropChatLine(line) {
     ) return true;
     if (NOISE_LINE_PATTERNS.some(re => re.test(trimmed))) return true;
     if (/^[╭╮╰╯│─]+$/.test(trimmed)) return true;
+    if (/^[█░▀▄▌▐▖▗▘▙▛▜▟\s]{12,}$/.test(trimmed)) return true;
     if (/^[•◦]\s*(working|preparing|booting)\b/i.test(trimmed)) return true;
+    if (!hasCjk && /^[a-z]\s*[•◦]$/i.test(trimmed)) return true;
     if (!hasCjk && /[•◦]/.test(trimmed) && lettersOnly.length >= 8) return true;
     if (/^›\s*/.test(trimmed)) return true;
     if (/^↳\s*/.test(trimmed)) return true;
@@ -398,6 +472,16 @@ function sanitizeTerminalOutputForChat(text) {
         .replace(/working\s*\([^\n]*\)/gi, '\n')
         .replace(/preparing[^\n]*\([^\n]*\)/gi, '\n')
         .replace(/😼\s*已开启代理环境/gi, '\n')
+        .replace(/\(use node --trace-deprecation[^\n]*\)/gi, '\n')
+        .replace(/to show where the warning was created\)?/gi, '\n')
+        .replace(/;?\s*◇\s*ready[^\n]*/gi, '\n')
+        .replace(/logged in with google:[^\n]*/gi, '\n')
+        .replace(/plan:\s*gemini[^\n]*/gi, '\n')
+        .replace(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*waiting for auth[^\n]*/gi, '\n')
+        .replace(/waiting for auth[^\n]*/gi, '\n')
+        .replace(/shift\+tab to accept edits/gi, '\n')
+        .replace(/press ['"]?esc['"]?\s+for\s+normal\s+mode\.?/gi, '\n')
+        .replace(/\[insert\][^\n]*/gi, '\n')
         .replace(/[^\x09\x0A\x20-\x7E\u00A0-\uFFFF]/g, '');
 
     const lines = withoutAnsi
@@ -414,7 +498,7 @@ function sanitizeTerminalOutputForChat(text) {
             if (hadPromptTail) {
                 line = line.replace(/^[•◦]\s+/, '');
             }
-            return line;
+            return trimSuspiciousAsciiTailAfterCjk(line);
         })
         .filter(line => !/^[`~|\\/:;,.^_]+$/.test(line))
         .filter(line => !/^[a-z0-9;?=><\-\\\/]{2,}$/i.test(line))
@@ -519,7 +603,9 @@ function enhanceMessageHtml(messageEl) {
 function appendAssistantChunk(chunk, sessionId = currentSessionId) {
     const cleaned = sanitizeTerminalOutputForChat(chunk);
     if (!cleaned) return false;
-    const noEcho = stripEchoedUserLines(cleaned, getRememberedUserLineSet(sessionId));
+    const rememberedSet = getRememberedUserLineSet(sessionId);
+    let noEcho = stripEchoedUserLines(cleaned, rememberedSet);
+    noEcho = stripEchoedUserLinesAnywhere(noEcho, rememberedSet);
     if (!noEcho) return false;
     setAssistantPending(false);
     const container = document.getElementById('chatMessages');
@@ -537,8 +623,10 @@ function appendAssistantChunk(chunk, sessionId = currentSessionId) {
         lastAssistantEl = el;
     } else {
         const previous = lastAssistantEl.dataset.raw || '';
-        if (previous.endsWith(noEcho)) return true;
-        const combined = previous ? `${previous}\n${noEcho}` : noEcho;
+        const deduped = removeAssistantLinesSeenBefore(noEcho, previous);
+        if (!deduped) return false;
+        if (previous.endsWith(deduped)) return true;
+        const combined = previous ? `${previous}\n${deduped}` : deduped;
         lastAssistantEl.dataset.raw = combined;
         lastAssistantEl.innerHTML = renderMarkdown(combined);
         enhanceMessageHtml(lastAssistantEl);
@@ -566,6 +654,21 @@ function clearAssistantStreamState(sessionId = null) {
     const state = assistantStreamStateBySession.get(sessionId);
     if (state?.timer) clearTimeout(state.timer);
     assistantStreamStateBySession.delete(sessionId);
+}
+
+function queueOutputWhileHydrating(sessionId, chunk) {
+    if (!sessionId || !chunk) return;
+    const prev = pendingOutputWhileHydrating.get(sessionId) || '';
+    const next = (prev + String(chunk));
+    pendingOutputWhileHydrating.set(sessionId, next.length > 200000 ? next.slice(-160000) : next);
+}
+
+function flushQueuedOutputAfterHydrating(sessionId) {
+    if (!sessionId) return;
+    const queued = pendingOutputWhileHydrating.get(sessionId);
+    pendingOutputWhileHydrating.delete(sessionId);
+    if (!queued) return;
+    appendAssistantChunkStream(queued, sessionId);
 }
 
 function shouldFlushPartialAssistantText(raw) {
@@ -943,6 +1046,7 @@ function getHistorySortTime(item) {
 
 function renderHistoryList() {
     const list = document.getElementById('historyList');
+    const highlightedSessionId = getHighlightedSessionId();
     const map = new Map();
     activeSessions.forEach(s => {
         map.set(s.sessionId, { ...s, active: true });
@@ -987,7 +1091,7 @@ function renderHistoryList() {
     list.innerHTML = groupOrder
         .filter(group => groups[group.key].length > 0)
         .map(group => {
-            const rows = groups[group.key].map(item => renderHistoryItem(item)).join('');
+            const rows = groups[group.key].map(item => renderHistoryItem(item, highlightedSessionId)).join('');
             return `
         <div class="history-group">
           <div class="history-group-title">${group.label}</div>
@@ -1034,6 +1138,10 @@ function renderHistoryList() {
     });
 }
 
+function getHighlightedSessionId() {
+    return pendingSwitchSessionId || historyModeSessionId || currentSessionId || focusedSessionId || null;
+}
+
 function closeHistoryMenus() {
     document.querySelectorAll('.history-item.menu-open').forEach(el => el.classList.remove('menu-open'));
 }
@@ -1045,6 +1153,49 @@ function getModelDisplayName(agentId, modelId) {
         return '模型';
     }
     return modelId;
+}
+
+function getSessionDisplayName(agentId, modelId) {
+    const agentName = getAgentDisplayName(agentId);
+    if (!modelId || modelId === 'default') return agentName;
+    return `${agentName} · ${modelId}`;
+}
+
+function getSessionMetaById(sessionId) {
+    if (!sessionId) return null;
+    const active = activeSessions.find(item => item?.sessionId === sessionId);
+    if (active) return active;
+    const history = historyData.find(item => item?.sessionId === sessionId);
+    if (history) return history;
+    const cached = transcriptCache.get(sessionId);
+    if (cached) return cached;
+    return null;
+}
+
+function getCenterBadgeMeta() {
+    if (historyModeSessionId) {
+        const historyMeta = getSessionMetaById(historyModeSessionId);
+        const agentId = historyMeta?.agentId || currentAgent || selectedAgentId || 'codex';
+        const modelId = historyMeta?.modelId || currentModel || 'default';
+        const cleanTitle = historyMeta ? getHistoryTitle(historyMeta) : '';
+        const title = cleanTitle && cleanTitle !== '新会话' ? cleanTitle : '';
+        return { agentId, modelId, title };
+    }
+
+    if (currentSessionId) {
+        const activeMeta = getSessionMetaById(currentSessionId);
+        const agentId = currentAgent || activeMeta?.agentId || selectedAgentId || 'codex';
+        const modelId = currentModel || activeMeta?.modelId || 'default';
+        const cleanTitle = activeMeta ? getHistoryTitle(activeMeta) : '';
+        const title = cleanTitle && cleanTitle !== '新会话' ? cleanTitle : '';
+        return { agentId, modelId, title };
+    }
+
+    return {
+        agentId: selectedAgentId || 'codex',
+        modelId: getSelectedModelId(),
+        title: ''
+    };
 }
 
 function getAgentDisplayName(agentId) {
@@ -1081,13 +1232,10 @@ function formatHistoryTime(ts) {
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function renderHistoryItem(item) {
+function renderHistoryItem(item, highlightedSessionId = null) {
     const title = escapeHtml(getHistoryTitle(item));
     const time = escapeHtml(formatHistoryTime(getHistorySortTime(item)));
-    const isCurrent = currentSessionId === item.sessionId
-        || historyModeSessionId === item.sessionId
-        || pendingSwitchSessionId === item.sessionId
-        || focusedSessionId === item.sessionId;
+    const isCurrent = highlightedSessionId === item.sessionId;
     const agentIcon = getAgentIcon(item.agentId);
     const modeIcon = getModeIcon(item.mode);
     const agentName = escapeHtml(getAgentDisplayName(item.agentId));
@@ -1146,8 +1294,8 @@ function escapeHtml(text) {
 }
 
 function getAgentIcon(agentId) {
-    if (agentId === 'codex') return '<img src="/icons/openai-light.svg" alt="ChatGPT" width="14" height="14" style="display:block;">';
-    if (agentId === 'gemini') return '<img src="/icons/gemini-color.svg" alt="Gemini" width="14" height="14" style="display:block;">';
+    if (agentId === 'codex') return '<img src="/icons/openai-light.svg" alt="ChatGPT" width="14" height="14" class="agent-icon-img">';
+    if (agentId === 'gemini') return '<img src="/icons/gemini-color.svg" alt="Gemini" width="14" height="14" class="agent-icon-img">';
     return '🤖';
 }
 
@@ -1194,6 +1342,8 @@ async function openHistory(sessionId) {
         currentSessionId = null;
         activeSessionMeta = null;
         showAgentUI(false);
+        updateSessionStatus();
+        updateSessionActionButtons();
         showToast('正在查看历史记录（只读）', 'info');
     } catch (e) {
         showToast('历史记录加载失败', 'error');
@@ -1201,13 +1351,22 @@ async function openHistory(sessionId) {
 }
 
 async function loadTranscriptIntoChat(sessionId) {
+    hydratingTranscriptSessionId = sessionId;
     try {
         const data = await fetchTranscript(sessionId, false);
         if (!data) return;
         historyModeSessionId = null;
         renderChatMessages(data.messages || []);
+        if (data.agentId) currentAgent = data.agentId;
+        if (data.modelId) currentModel = data.modelId;
+        updateSessionStatus();
     } catch {
         // 忽略
+    } finally {
+        if (hydratingTranscriptSessionId === sessionId) {
+            hydratingTranscriptSessionId = null;
+        }
+        flushQueuedOutputAfterHydrating(sessionId);
     }
 }
 
@@ -1305,13 +1464,15 @@ function updateSessionStatus() {
 function updateChatModelBadge() {
     const el = document.getElementById('chatModelBadge');
     if (!el) return;
-    let label = '';
-    if (currentSessionId || historyModeSessionId) {
-        label = getModelDisplayName(currentAgent, currentModel);
-    } else {
-        label = getModelDisplayName(selectedAgentId, 'default');
-    }
-    el.textContent = label;
+    const { agentId, modelId, title } = getCenterBadgeMeta();
+    const label = escapeHtml(title ? `${getAgentDisplayName(agentId)} · ${title}` : getSessionDisplayName(agentId, modelId));
+    const icon = getAgentIcon(agentId);
+    el.innerHTML = `
+      <span class="chat-model-badge-inner">
+        <span class="chat-model-badge-icon">${icon}</span>
+        <span class="chat-model-badge-text">${label}</span>
+      </span>
+    `;
 }
 
 function updateSessionActionButtons() {
@@ -1376,7 +1537,12 @@ function handleMessage(msg) {
             if (term) term.write(msg.data);
             const shouldRenderToChat = sessionMode === 'chat' && (!historyModeSessionId || historyModeSessionId === currentSessionId);
             if (shouldRenderToChat) {
-                appendAssistantChunkStream(msg.data, msg.sessionId || currentSessionId);
+                const targetSessionId = msg.sessionId || currentSessionId;
+                if (hydratingTranscriptSessionId && hydratingTranscriptSessionId === targetSessionId) {
+                    queueOutputWhileHydrating(targetSessionId, msg.data || '');
+                } else {
+                    appendAssistantChunkStream(msg.data, targetSessionId);
+                }
             }
             break;
         case 'started':
@@ -1446,6 +1612,10 @@ function handleMessage(msg) {
             }
             setInputEnabled(true);
             setAssistantPending(false);
+            if (sessionMode === 'chat') {
+                resetChatView();
+                loadTranscriptIntoChat(msg.sessionId);
+            }
             loadActiveSessions().then(renderHistoryList);
             break;
         case 'no_session':
@@ -1589,6 +1759,9 @@ function startPrechatConversation() {
     lastUserMessageText = text;
     pendingUserMessage = text;
     sessionMode = pendingMode;
+    currentAgent = getSelectedAgentId();
+    currentModel = 'default';
+    updateChatModelBadge();
     if (prechatInput) prechatInput.value = '';
     if (sessionMode === 'chat') setAssistantPending(true);
     startSelectedSession();

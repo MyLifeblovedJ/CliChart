@@ -15,7 +15,7 @@
     <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.5/dist/purify.min.js"></script>
 </head>
 
-<body class="chat-page">
+<body class="chat-page right-panel-collapsed">
     <!-- 顶栏 -->
     <header class="top-bar">
         <div class="top-left">
@@ -31,7 +31,7 @@
     <!-- 主内容区 -->
     <div class="main-content">
         <!-- 左侧文件面板 -->
-        <aside class="history-panel" id="historyPanel">
+        <aside class="history-panel" id="historyPanel" style="display:none;">
             <div class="panel-section">
                 <div class="panel-header">
                     <div class="history-actions-bar">
@@ -110,7 +110,7 @@
         </div>
 
         <!-- 右侧文件面板 -->
-        <aside class="file-panel right-panel" id="filePanel">
+        <aside class="file-panel right-panel" id="filePanel" style="display:none;">
             <div class="panel-header file-panel-header">
                 <h3>📁 会话文件</h3>
                 <div class="file-panel-actions">
@@ -122,7 +122,7 @@
                 <div class="file-tree-empty">暂无文件，可拖拽文件到此处</div>
             </div>
         </aside>
-        <button class="file-panel-toggle-fixed" id="filePanelToggle" title="收起文件栏">⟩</button>
+        <button class="file-panel-toggle-fixed" id="filePanelToggle" title="展开文件栏">⟨</button>
     </div>
 
     <!-- 底部工具栏 -->

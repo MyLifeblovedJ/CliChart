@@ -656,6 +656,11 @@ body {
   font-size: 11px;
 }
 
+.agent-icon-img {
+  display: block;
+  object-fit: contain;
+}
+
 .history-running-tag {
   display: inline-flex;
   align-items: center;
@@ -1016,6 +1021,32 @@ body {
   font-weight: 650;
   color: #e5eefb;
   letter-spacing: 0.2px;
+}
+
+.chat-model-badge-inner {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-model-badge-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.chat-model-badge-icon .agent-icon-img {
+  width: 15px;
+  height: 15px;
+}
+
+.chat-model-badge-text {
+  white-space: nowrap;
 }
 
 .agent-tabs {
